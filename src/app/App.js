@@ -28,11 +28,6 @@ import {
 
 /**
  * Header는 페이지 최상단 소개 영역을 렌더링한다.
- *
- * props:
- * - market: 현재 루트 state 전체 객체
- *
- * 이 컴포넌트는 hook을 사용하지 않고, 부모가 내려준 값만 그대로 읽는다.
  */
 function Header({ market }) {
   const feedStatusLabel = market.feedMode === "live" ? "Live WebSocket" : market.feedMode === "mock" ? "Mock Data" : "Loading";
@@ -61,16 +56,15 @@ function Header({ market }) {
  * 이 컴포넌트도 stateless component다.
  * 즉 "데이터를 계산해서 보관"하지 않고, 전달받은 market을 화면에만 표시한다.
  */
-function PricePanel({ market }) {
+function PricePanel({ market, selectedInterval, chartState, appliedMovingAveragePeriod, chartMeta }) {
   const isLoading = market.isHydrating;
   const trendClass = market.change >= 0 ? "positive" : "negative";
   const priceText = isLoading || market.price === null ? "Loading..." : formatPrice(market.price);
   const changeText = isLoading ? "" : formatSignedPercent(market.changePercent);
   const noteText = isLoading ? "최근 Binance 거래를 불러오는 중입니다." : `Tick delta ${formatSignedPrice(market.change)} · Updated ${formatClock(market.lastUpdated)}`;
-  const highText = isLoading || market.stats.high === null ? "—" : formatPrice(market.stats.high);
-  const lowText = isLoading || market.stats.low === null ? "—" : formatPrice(market.stats.low);
-  const volumeBtcText = isLoading ? "—" : formatAmount(market.stats.volumeBtc);
-  const volumeUsdtText = isLoading ? "—" : formatCompactNumber(market.stats.volumeUsdt);
+  const latestTrade = market.trades[market.trades.length - 1] ?? null;
+  const latestCandle = chartState.candles[chartState.candles.length - 1] ?? null;
+  const latestSyncTimestamp = selectedInterval === "1s" ? market.lastUpdated : latestCandle?.timestamp ?? market.lastUpdated;
 
   return h(
     "section",
@@ -99,14 +93,78 @@ function PricePanel({ market }) {
           changeText ? h("span", { className: `price-delta ${trendClass}` }, changeText) : null,
         ),
         h("div", { className: "price-note" }, noteText),
+        h(
+          "div",
+          { className: "hook-summary" },
+          h("div", { className: "hook-summary-line" }, h("span", { className: "hook-summary-name state-hook" }, "useState"), " 시장 원본 데이터와 차트 상태를 저장합니다."),
+          h("div", { className: "hook-summary-line" }, h("span", { className: "hook-summary-name effect-hook" }, "useEffect"), " Binance REST/WebSocket 연결로 상태를 갱신합니다."),
+          h("div", { className: "hook-summary-line" }, h("span", { className: "hook-summary-name memo-hook" }, "useMemo"), " 차트를 그리기 위한 범위와 좌표를 계산합니다."),
+        ),
       ),
       h(
         "div",
         { className: "stats-grid" },
-        h("article", { className: "stat-card" }, h("div", { className: "stat-label" }, "Session High"), h("div", { className: "stat-value" }, highText)),
-        h("article", { className: "stat-card" }, h("div", { className: "stat-label" }, "Session Low"), h("div", { className: "stat-value" }, lowText)),
-        h("article", { className: "stat-card" }, h("div", { className: "stat-label" }, "Feed Volume (BTC)"), h("div", { className: "stat-value" }, volumeBtcText)),
-        h("article", { className: "stat-card" }, h("div", { className: "stat-label" }, "Feed Volume (USDT)"), h("div", { className: "stat-value" }, volumeUsdtText)),
+        h(
+          "article",
+          { className: "stat-card" },
+          h("div", { className: "stat-label hook-label state-hook" }, "useState market"),
+          h(
+            "div",
+            { className: "stat-kv-list" },
+            h("div", { className: "stat-kv" }, h("span", { className: "kv-key" }, "price"), h("span", { className: "kv-value" }, priceText)),
+            h("div", { className: "stat-kv" }, h("span", { className: "kv-key" }, "lastTick"), h("span", { className: "kv-value" }, formatClock(market.lastUpdated))),
+            h(
+              "div",
+              { className: "stat-kv" },
+              h("span", { className: "kv-key" }, "lastTrade"),
+              h("span", { className: "kv-value" }, latestTrade ? `${latestTrade.side} ${formatPrice(latestTrade.price)}` : "loading"),
+            ),
+          ),
+        ),
+        h(
+          "article",
+          { className: "stat-card" },
+          h("div", { className: "stat-label hook-label state-hook" }, "useState chart"),
+          h(
+            "div",
+            { className: "stat-kv-list" },
+            h("div", { className: "stat-kv" }, h("span", { className: "kv-key" }, "interval"), h("span", { className: "kv-value" }, getChartIntervalLabel(selectedInterval))),
+            h(
+              "div",
+              { className: "stat-kv" },
+              h("span", { className: "kv-key" }, "close"),
+              h("span", { className: "kv-value" }, latestCandle ? formatPrice(latestCandle.close) : "loading"),
+            ),
+            h(
+              "div",
+              { className: "stat-kv" },
+              h("span", { className: "kv-key" }, "candleTime"),
+              h("span", { className: "kv-value" }, latestCandle ? formatClock(latestCandle.timestamp) : "loading"),
+            ),
+          ),
+        ),
+        h(
+          "article",
+          { className: "stat-card" },
+          h("div", { className: "stat-label hook-label effect-hook" }, "useEffect sync"),
+          h(
+            "div",
+            { className: "stat-kv-list" },
+            h("div", { className: "stat-kv" }, h("span", { className: "kv-key" }, "market"), h("span", { className: "kv-value" }, market.connectionStatus)),
+            h("div", { className: "stat-kv" }, h("span", { className: "kv-key" }, "chart"), h("span", { className: "kv-value" }, chartState.connectionStatus)),
+            h("div", { className: "stat-kv" }, h("span", { className: "kv-key" }, "recentSync"), h("span", { className: "kv-value" }, formatClock(latestSyncTimestamp))),
+          ),
+        ),
+        h(
+          "article",
+          { className: "stat-card" },
+          h("div", { className: "stat-label hook-label memo-hook" }, "useMemo chartMeta"),
+          h(
+            "div",
+            { className: "stat-kv-list" },
+            h("div", { className: "stat-kv" }, h("span", { className: "kv-key" }, "range"), h("span", { className: "kv-value" }, chartMeta.candles.length ? `${formatPrice(chartMeta.min)} ~ ${formatPrice(chartMeta.max)}` : "loading")),
+          ),
+        ),
       ),
     ),
   );
@@ -141,17 +199,48 @@ function ChartPanel({
       h("div", null, h("h2", { className: "panel-title" }, `BTCUSDT ${getChartIntervalLabel(selectedInterval)} Chart`)),
       h(
         "div",
-        { className: "interval-toggle" },
-        ["1s", "1m", "5m"].map((interval) =>
+        { className: "chart-toolbar" },
+        h(
+          "div",
+          { className: "ma-controls ma-controls-inline" },
+          h("label", { className: "ma-label", for: `ma-input-${selectedInterval}` }, `${getChartIntervalLabel(selectedInterval)} MA`),
+          h("input", {
+            id: `ma-input-${selectedInterval}`,
+            className: "ma-input",
+            type: "number",
+            min: "5",
+            max: "20",
+            step: "1",
+            value: movingAverageInput,
+            placeholder: "5-20",
+            onInput: (event) => onMovingAverageInputChange(event.target.value),
+          }),
           h(
             "button",
             {
-              key: interval,
               type: "button",
-              className: `interval-button ${selectedInterval === interval ? "active" : ""}`,
-              onClick: () => onSelectInterval(interval),
+              className: `ma-apply-button ${isValidMovingAverageInput ? "active" : ""}`,
+              onClick: () => onApplyMovingAverage(),
+              disabled: !isValidMovingAverageInput,
             },
-            getChartIntervalLabel(interval),
+            "Apply",
+          ),
+          h("span", { className: "ma-status" }, appliedMovingAveragePeriod ? `MA(${appliedMovingAveragePeriod})` : "No MA"),
+        ),
+        h(
+          "div",
+          { className: "interval-toggle" },
+          ["1s", "1m", "5m"].map((interval) =>
+            h(
+              "button",
+              {
+                key: interval,
+                type: "button",
+                className: `interval-button ${selectedInterval === interval ? "active" : ""}`,
+                onClick: () => onSelectInterval(interval),
+              },
+              getChartIntervalLabel(interval),
+            ),
           ),
         ),
       ),
@@ -159,33 +248,6 @@ function ChartPanel({
     h(
       "div",
       { className: "chart-frame" },
-      h(
-        "div",
-        { className: "ma-controls" },
-        h("label", { className: "ma-label", for: `ma-input-${selectedInterval}` }, `${getChartIntervalLabel(selectedInterval)} MA`),
-        h("input", {
-          id: `ma-input-${selectedInterval}`,
-          className: "ma-input",
-          type: "number",
-          min: "5",
-          max: "20",
-          step: "1",
-          value: movingAverageInput,
-          placeholder: "5-20",
-          onInput: (event) => onMovingAverageInputChange(event.target.value),
-        }),
-        h(
-          "button",
-          {
-            type: "button",
-            className: `ma-apply-button ${isValidMovingAverageInput ? "active" : ""}`,
-            onClick: () => onApplyMovingAverage(),
-            disabled: !isValidMovingAverageInput,
-          },
-          "Apply",
-        ),
-        h("span", { className: "ma-status" }, appliedMovingAveragePeriod ? `Active MA(${appliedMovingAveragePeriod})` : "No MA"),
-      ),
       isLoading
         ? h(
             "div",
@@ -195,43 +257,56 @@ function ChartPanel({
           )
         : h(
             "svg",
-            { className: "chart-canvas", viewBox: "0 0 640 320", preserveAspectRatio: "none" },
+            { className: "chart-canvas", viewBox: "0 0 1200 320", preserveAspectRatio: "none" },
             chartMeta.movingAverage.length
-              ? h("polyline", {
-                  points: chartMeta.movingAverage.map((point) => `${point.x},${point.y}`).join(" "),
-                  fill: "none",
-                  stroke: "rgba(167, 139, 250, 0.95)",
-                  strokeWidth: "1.8",
-                  strokeLinecap: "round",
-                  strokeLinejoin: "round",
-                })
+              ? [
+                  h("polyline", {
+                    key: "ma-glow",
+                    points: chartMeta.movingAverage.map((point) => `${point.x},${point.y}`).join(" "),
+                    fill: "none",
+                    stroke: "rgba(249, 115, 22, 0.22)",
+                    strokeWidth: "9",
+                    strokeLinecap: "round",
+                    strokeLinejoin: "round",
+                  }),
+                  h("polyline", {
+                    key: "ma-line",
+                    points: chartMeta.movingAverage.map((point) => `${point.x},${point.y}`).join(" "),
+                    fill: "none",
+                    stroke: "#ea580c",
+                    strokeWidth: "4.2",
+                    strokeLinecap: "round",
+                    strokeLinejoin: "round",
+                  }),
+                ]
               : null,
             h("line", {
               x1: String(chartMeta.plotWidth),
               x2: String(chartMeta.plotWidth),
               y1: "0",
               y2: "320",
-              stroke: "rgba(149, 163, 194, 0.24)",
+              stroke: "rgba(148, 163, 184, 0.28)",
               strokeWidth: "1",
             }),
             chartMeta.axisTicks.map((tick) => [
               h("line", {
                 key: `tick-line-${tick.key}`,
                 x1: String(chartMeta.plotWidth),
-                x2: "640",
+                x2: "1200",
                 y1: String(tick.y),
                 y2: String(tick.y),
-                stroke: "rgba(149, 163, 194, 0.14)",
+                stroke: "rgba(148, 163, 184, 0.16)",
                 strokeWidth: "1",
               }),
               h(
                 "text",
                 {
                   key: `tick-label-${tick.key}`,
-                  x: String(chartMeta.plotWidth + 42),
+                  x: String(chartMeta.plotWidth + 72),
                   y: String(tick.y),
-                  fill: "rgba(237, 243, 255, 0.82)",
-                  "font-size": "11",
+                  fill: "rgba(30, 41, 59, 0.88)",
+                  "font-size": "15",
+                  "font-weight": "700",
                   "text-anchor": "end",
                   "dominant-baseline": "middle",
                 },
@@ -246,7 +321,7 @@ function ChartPanel({
                 y1: String(candle.highY),
                 y2: String(candle.lowY),
                 stroke: candle.color,
-                strokeWidth: "1.5",
+                strokeWidth: "1.8",
                 strokeLinecap: "round",
               }),
               h("rect", {
@@ -256,9 +331,9 @@ function ChartPanel({
                 width: String(candle.bodyWidth),
                 height: String(candle.bodyHeight),
                 rx: "1.5",
-                fill: candle.rising ? "rgba(45, 212, 191, 0.88)" : "rgba(251, 113, 133, 0.88)",
+                fill: candle.rising ? "#dc2626" : "#2563eb",
                 stroke: candle.color,
-                strokeWidth: "1",
+                strokeWidth: "1.2",
               }),
             ]),
           ),
@@ -632,7 +707,7 @@ export function App() {
   // 실행 순서 3:
   // market.candles가 바뀔 때만 차트 좌표를 다시 계산한다.
   const chartMeta = useMemo(
-    () => buildChartMeta(chartState.candles, 640, 320, appliedMovingAveragePeriods[selectedInterval]),
+    () => buildChartMeta(chartState.candles, 1200, 320, appliedMovingAveragePeriods[selectedInterval]),
     [chartState.candles, appliedMovingAveragePeriods, selectedInterval],
   );
 
@@ -662,8 +737,23 @@ export function App() {
       { className: "dashboard-grid" },
       h(
         "div",
-        { className: "stack" },
-        h(PricePanel, { market }),
+        { className: "stack top-stack" },
+        h(PricePanel, {
+          market,
+          selectedInterval,
+          chartState,
+          appliedMovingAveragePeriod: appliedMovingAveragePeriods[selectedInterval],
+          chartMeta,
+        }),
+      ),
+      h(
+        "div",
+        { className: "stack side-stack" },
+        h(TradesPanel, { trades: market.trades, feedMode: market.feedMode }),
+      ),
+      h(
+        "div",
+        { className: "chart-span" },
         h(ChartPanel, {
           chartState,
           selectedInterval,
@@ -689,11 +779,6 @@ export function App() {
           },
           chartMeta,
         }),
-      ),
-      h(
-        "div",
-        { className: "stack" },
-        h(TradesPanel, { trades: market.trades, feedMode: market.feedMode }),
       ),
     ),
     h("div", { className: "footer-note" }, `Built with our custom FunctionComponent runtime. No react, no react-dom. Source: ${market.connectionLabel}.`),

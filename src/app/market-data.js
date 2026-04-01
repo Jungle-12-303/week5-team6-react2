@@ -701,8 +701,8 @@ export function buildChartMeta(candles, width, height, movingAveragePeriod = nul
       min: 0,
       max: 0,
       axisStep: 1,
-      axisWidth: 58,
-      plotWidth: round(width - 58, 2),
+      axisWidth: 110,
+      plotWidth: round(width - 110, 2),
       plotHeight: round(height - 28, 2),
       candleWidth: 0,
       axisTicks: [],
@@ -711,7 +711,7 @@ export function buildChartMeta(candles, width, height, movingAveragePeriod = nul
     };
   }
 
-  const axisWidth = 58;
+  const axisWidth = 110;
   const topPadding = 14;
   const bottomPadding = 14;
   const plotWidth = Math.max(width - axisWidth, 1);
@@ -752,7 +752,7 @@ export function buildChartMeta(candles, width, height, movingAveragePeriod = nul
       bodyY: round(bodyTop, 2),
       bodyWidth: round(candleWidth, 2),
       bodyHeight: round(bodyHeight, 2),
-      color: rising ? "#2dd4bf" : "#fb7185",
+      color: rising ? "#b91c1c" : "#1d4ed8",
       rising,
     };
   });
