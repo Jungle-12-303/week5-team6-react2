@@ -32,6 +32,18 @@ React의 핵심 기능을 처음부터 구현하는 프로젝트입니다.
 - **구현 시 고려할 점**: 직접 구현할 때 주의할 사항
 - **참고**: 참고 자료
 
+## 프롬프트 문서
+
+AI 에이전트에게 작업을 요청할 때 바로 재사용할 수 있는 프롬프트 문서입니다.
+
+| 용도 | 문서 |
+|---|---|
+| 통합 구현 요청 | [implementation-prompt.md](./implementation-prompt.md) |
+| 실행용 구현 요청 | [run-implementation-prompt.md](./run-implementation-prompt.md) |
+| 코어 런타임 구현 | [core-implementation-prompt.md](./core-implementation-prompt.md) |
+| 비트코인 UI 구현 | [bitcoin-ui-prompt.md](./bitcoin-ui-prompt.md) |
+| 실시간 데이터 연결 | [realtime-data-connection-prompt.md](./realtime-data-connection-prompt.md) |
+
 ---
 
 ## AI 에이전트(Claude)와 함께 개발할 때 — 좋은 결과물을 얻는 방법
@@ -46,6 +58,8 @@ React의 핵심 기능을 처음부터 구현하는 프로젝트입니다.
 AI 에이전트는 범용적으로 학습되어 있어서, 아무 맥락 없이 요청하면 **일반적인 React 구현**을 가져오거나 우리 프로젝트 방식과 다른 코드를 생성합니다.
 
 우리가 정의한 VNode 구조, Fiber 설계 방식, hook 인덱스 관리 방법 등을 에이전트가 모르면 전혀 다른 방향의 코드를 만들 수 있습니다.
+
+특히 이 프로젝트는 **기존 React 패키지(`react`, `react-dom`)를 사용하는 프로젝트가 아니라, 우리가 직접 만든 모듈(패키지/라이브러리)만으로 화면을 구현하는 프로젝트**라는 점을 반드시 명시해야 합니다.
 
 **문서 = 에이전트에게 주는 맥락(Context)** 입니다. 맥락이 정확할수록 결과물의 품질이 높아집니다.
 
@@ -120,6 +134,7 @@ useState 구현해줘
 - hookIndex를 이용한 순서 기반 식별
 - setState 호출 시 리렌더 스케줄링 포함
 - 함수형 업데이트(prev => next) 지원
+- 기존 react/react-dom 패키지는 사용하지 말고, 우리가 직접 만든 런타임만 사용할 것
 ```
 
 ---
@@ -131,6 +146,7 @@ useState 구현해줘
 - [ ] 의존하는 이전 단계 기능의 `.md` 파일도 포함했나요?
 - [ ] 이미 작성된 관련 코드 파일도 포함했나요?
 - [ ] 구현 방식의 제약 조건(어떤 구조를 사용해야 하는지)을 명시했나요?
+- [ ] 기존 `react`, `react-dom`이 아니라 우리가 만든 모듈만 써야 한다는 점을 명시했나요?
 
 ---
 
