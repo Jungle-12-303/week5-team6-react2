@@ -3,7 +3,7 @@
 const BASE_PRICE = 69043.3;
 
 // 차트에 몇 개의 1초 캔들을 유지할지 결정한다.
-const SERIES_LENGTH = 120;
+const SERIES_LENGTH = 150;
 
 // 계약 히스토리 표에 몇 개의 최근 체결을 유지할지 결정한다.
 const TRADE_HISTORY_LENGTH = 8;
@@ -145,6 +145,18 @@ function normalizePrice(value, fallback = BASE_PRICE) {
   return Number.isFinite(parsed) ? round(parsed, 1) : fallback;
 }
 
+function computeDailyChange(price, dayOpenPrice) {
+  const referencePrice = Number.isFinite(dayOpenPrice) && dayOpenPrice > 0 ? round(dayOpenPrice, 1) : round(price, 1);
+  const change = round(price - referencePrice, 1);
+  const changePercent = referencePrice === 0 ? 0 : round((change / referencePrice) * 100, 2);
+
+  return {
+    dayOpenPrice: referencePrice,
+    change,
+    changePercent,
+  };
+}
+
 /**
  * Binance REST/WebSocket kline 데이터를 공통 candle 객체로 변환한다.
  */
@@ -175,7 +187,7 @@ function normalizeKlineCandle(entry) {
  *
  * 실행 순서 A-1:
  * 앱이 처음 켜졌지만 아직 live 데이터가 없을 때, 화면이 비어 보이지 않도록
- * 미리 120개의 가짜 1초 캔들을 만든다.
+ * 미리 150개의 가짜 1초 캔들을 만든다.
  */
 function buildSeedCandles(basePrice, now) {
   const candles = [];
@@ -201,7 +213,7 @@ function buildSeedCandles(basePrice, now) {
  *
  * 왜 필요한가?
  * - 새로고침 직후 mock 가격대와 live 가격대가 다르면 차트가 갑자기 수직으로 튀어 보인다.
- * - 그래서 첫 live 가격이 들어오는 순간, 그 가격을 기준으로 120초 창을 다시 맞춘다.
+ * - 그래서 첫 live 가격이 들어오는 순간, 그 가격을 기준으로 150초 창을 다시 맞춘다.
  */
 function buildFlatSeedCandles(basePrice, now) {
   const candles = [];
@@ -360,13 +372,16 @@ function bootstrapLiveState(previousState, price, timestamp, amount = 0, trade =
   const candles = pushCandle(buildFlatSeedCandles(price, timestamp), price, timestamp, amount);
   const series = candlesToSeries(candles);
   const stats = computeSessionStats(series, amount, amount * price);
+  const daily = computeDailyChange(price, previousState.dayOpenPrice ?? price);
 
   return {
     ...previousState,
     price,
     previousClose: price,
-    change: 0,
-    changePercent: 0,
+    dayOpenPrice: daily.dayOpenPrice,
+    tickChange: 0,
+    change: daily.change,
+    changePercent: daily.changePercent,
     lastUpdated: timestamp,
     candles,
     series,
@@ -387,7 +402,7 @@ function bootstrapLiveState(previousState, price, timestamp, amount = 0, trade =
  *   "지금 시점 이전의 실제 거래 흐름"을 먼저 보여주기 위해서다.
  * - REST backfill 이후에는 WebSocket live 이벤트가 그대로 이어 붙는다.
  */
-export function buildMarketStateFromAggTrades(previousState, trades, now = Date.now()) {
+export function buildMarketStateFromAggTrades(previousState, trades, dayTicker = null, now = Date.now()) {
   if (!Array.isArray(trades) || trades.length === 0) {
     return previousState;
   }
@@ -423,15 +438,17 @@ export function buildMarketStateFromAggTrades(previousState, trades, now = Date.
   const series = candlesToSeries(candles);
   const previousClose = sortedTrades.length > 1 ? sortedTrades[sortedTrades.length - 2].price : firstTrade.price;
   const price = lastTrade.price;
-  const change = round(price - previousClose, 1);
-  const changePercent = previousClose === 0 ? 0 : round((change / previousClose) * 100, 2);
+  const dayOpenPrice = normalizePrice(dayTicker?.openPrice, firstTrade.price);
+  const daily = computeDailyChange(price, dayOpenPrice);
 
   return {
     ...previousState,
     price,
     previousClose,
-    change,
-    changePercent,
+    dayOpenPrice: daily.dayOpenPrice,
+    tickChange: round(price - previousClose, 1),
+    change: daily.change,
+    changePercent: daily.changePercent,
     lastUpdated: lastTrade.timestamp,
     candles,
     series,
@@ -459,7 +476,7 @@ export function buildChartStateFromKlines(previousState, klines, interval) {
     };
   }
 
-  const candles = klines.map((entry) => normalizeKlineCandle(entry)).slice(-120);
+  const candles = klines.map((entry) => normalizeKlineCandle(entry)).slice(-SERIES_LENGTH);
 
   return {
     ...previousState,
@@ -483,7 +500,7 @@ export function applyLiveKlineUpdate(previousState, payload, interval) {
   if (lastCandle && lastCandle.timestamp === nextCandle.timestamp) {
     candles = [...previousState.candles.slice(0, -1), nextCandle];
   } else {
-    candles = [...previousState.candles, nextCandle].slice(-120);
+    candles = [...previousState.candles, nextCandle].slice(-SERIES_LENGTH);
   }
 
   return {
@@ -509,6 +526,8 @@ export function createInitialMarketState() {
     symbol: "BTCUSDT",
     price: null,
     previousClose: null,
+    dayOpenPrice: null,
+    tickChange: 0,
     change: 0,
     changePercent: 0,
     lastUpdated: now,
@@ -543,15 +562,16 @@ export function advanceMarketState(previousState) {
     const series = candlesToSeries(candles);
     const price = candles.at(-1).close;
     const previousClose = candles.at(-2).close;
-    const change = round(price - previousClose, 1);
-    const changePercent = round((change / previousClose) * 100, 2);
+    const daily = computeDailyChange(price, series[0].price);
 
     return {
       ...previousState,
       price,
       previousClose,
-      change,
-      changePercent,
+      dayOpenPrice: daily.dayOpenPrice,
+      tickChange: round(price - previousClose, 1),
+      change: daily.change,
+      changePercent: daily.changePercent,
       lastUpdated: now,
       candles,
       series,
@@ -572,9 +592,9 @@ export function advanceMarketState(previousState) {
   const candles = pushCandle(previousState.candles, price, now, 0.35 + Math.random() * 0.85);
   const series = candlesToSeries(candles);
   const previousClose = previousState.price;
-  const change = round(price - previousClose, 1);
-  const changePercent = round((change / previousClose) * 100, 2);
-  const side = change >= 0 ? "BUY" : "SELL";
+  const tickChange = round(price - previousClose, 1);
+  const daily = computeDailyChange(price, previousState.dayOpenPrice ?? previousState.stats.open ?? series[0].price);
+  const side = tickChange >= 0 ? "BUY" : "SELL";
   const amount = 0.12 + Math.random() * 1.35;
   const trades = [
     ...previousState.trades.slice(-TRADE_HISTORY_LENGTH + 1),
@@ -585,8 +605,10 @@ export function advanceMarketState(previousState) {
     ...previousState,
     price,
     previousClose,
-    change,
-    changePercent,
+    dayOpenPrice: daily.dayOpenPrice,
+    tickChange,
+    change: daily.change,
+    changePercent: daily.changePercent,
     lastUpdated: now,
     candles,
     series,
@@ -629,15 +651,17 @@ export function applyLivePriceUpdate(previousState, payload) {
   }
 
   const previousClose = previousState.price;
-  const change = round(price - previousClose, 1);
-  const changePercent = previousClose === 0 ? 0 : round((change / previousClose) * 100, 2);
+  const tickChange = round(price - previousClose, 1);
+  const daily = computeDailyChange(price, previousState.dayOpenPrice ?? previousState.price);
 
   return {
     ...previousState,
     price,
     previousClose,
-    change,
-    changePercent,
+    dayOpenPrice: daily.dayOpenPrice,
+    tickChange,
+    change: daily.change,
+    changePercent: daily.changePercent,
     lastUpdated: timestamp,
     feedMode: "live",
     connectionStatus: "live",
@@ -670,13 +694,16 @@ export function applyLiveTradeUpdate(previousState, payload) {
   const volumeBtc = previousState.stats.volumeBtc + amount;
   const volumeUsdt = previousState.stats.volumeUsdt + amount * price;
   const stats = computeSessionStats(series, volumeBtc, volumeUsdt);
+  const daily = computeDailyChange(price, previousState.dayOpenPrice ?? previousState.price);
 
   return {
     ...previousState,
     price,
     previousClose: previousState.price,
-    change: round(price - previousState.price, 1),
-    changePercent: previousState.price === 0 ? 0 : round(((price - previousState.price) / previousState.price) * 100, 2),
+    dayOpenPrice: daily.dayOpenPrice,
+    tickChange: round(price - previousState.price, 1),
+    change: daily.change,
+    changePercent: daily.changePercent,
     lastUpdated: timestamp,
     candles,
     series,

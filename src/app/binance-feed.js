@@ -5,7 +5,7 @@ const RECONNECT_DELAY_MS = 2000;
 const STALE_TIMEOUT_MS = 6000;
 
 // 차트 시작 시 최근 몇 초의 거래를 REST로 미리 불러올지 결정한다.
-const BACKFILL_WINDOW_MS = 120 * 1000;
+const BACKFILL_WINDOW_MS = 150 * 1000;
 
 // aggTrade REST는 한 번에 최대 1000개만 주므로, backfill 구간을 작은 창으로 나눠서 가져온다.
 const AGG_TRADE_SLICE_MS = 15 * 1000;
@@ -38,7 +38,7 @@ function buildKlineStreamUrl(symbol, interval) {
  * 최근 aggTrade를 REST로 가져온다.
  *
  * 목적:
- * - 페이지 진입 직후 과거 120초 정도의 실제 거래 흐름을 먼저 그리기
+ * - 페이지 진입 직후 과거 150초 정도의 실제 거래 흐름을 먼저 그리기
  * - 그 뒤 WebSocket live 이벤트를 이어 붙이기
  */
 export async function fetchRecentAggTrades(symbol = "btcusdt", now = Date.now()) {
@@ -83,11 +83,32 @@ export async function fetchRecentAggTrades(symbol = "btcusdt", now = Date.now())
 }
 
 /**
+ * 최근 24시간 가격 통계를 REST로 가져온다.
+ */
+export async function fetch24hrTicker(symbol = "btcusdt") {
+  if (typeof fetch === "undefined") {
+    throw new Error("Fetch API is not available in this environment.");
+  }
+
+  const url = new URL("/fapi/v1/ticker/24hr", REST_BASE_URL);
+  url.searchParams.set("symbol", symbol.toUpperCase());
+
+  const response = await fetch(url);
+
+  if (!response.ok) {
+    throw new Error(`Failed to fetch 24hr ticker: ${response.status}`);
+  }
+
+  const ticker = await response.json();
+  return ticker && typeof ticker === "object" ? ticker : null;
+}
+
+/**
  * 최근 kline 데이터를 REST로 가져온다.
  *
  * 차트 interval 선택 시 1분봉/5분봉 초기 화면을 채울 때 사용한다.
  */
-export async function fetchRecentKlines(symbol = "btcusdt", interval = "1m", limit = 120) {
+export async function fetchRecentKlines(symbol = "btcusdt", interval = "1m", limit = 150) {
   if (typeof fetch === "undefined") {
     throw new Error("Fetch API is not available in this environment.");
   }

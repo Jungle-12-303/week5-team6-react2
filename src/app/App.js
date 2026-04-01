@@ -22,6 +22,7 @@ import {
 import {
   connectBinanceFeed,
   connectBinanceKlineFeed,
+  fetch24hrTicker,
   fetchRecentAggTrades,
   fetchRecentKlines,
 } from "./binance-feed.js";
@@ -61,7 +62,7 @@ function PricePanel({ market, selectedInterval, chartState, appliedMovingAverage
   const trendClass = market.change >= 0 ? "positive" : "negative";
   const priceText = isLoading || market.price === null ? "Loading..." : formatPrice(market.price);
   const changeText = isLoading ? "" : formatSignedPercent(market.changePercent);
-  const noteText = isLoading ? "최근 Binance 거래를 불러오는 중입니다." : `Tick delta ${formatSignedPrice(market.change)} · Updated ${formatClock(market.lastUpdated)}`;
+  const noteText = isLoading ? "최근 Binance 거래를 불러오는 중입니다." : `Tick delta ${formatSignedPrice(market.tickChange ?? 0)} · Updated ${formatClock(market.lastUpdated)}`;
   const latestTrade = market.trades[market.trades.length - 1] ?? null;
   const latestCandle = chartState.candles[chartState.candles.length - 1] ?? null;
   const latestSyncTimestamp = selectedInterval === "1s" ? market.lastUpdated : latestCandle?.timestamp ?? market.lastUpdated;
@@ -265,7 +266,7 @@ function ChartPanel({
                     points: chartMeta.movingAverage.map((point) => `${point.x},${point.y}`).join(" "),
                     fill: "none",
                     stroke: "rgba(249, 115, 22, 0.22)",
-                    strokeWidth: "9",
+                    strokeWidth: "15",
                     strokeLinecap: "round",
                     strokeLinejoin: "round",
                   }),
@@ -274,7 +275,7 @@ function ChartPanel({
                     points: chartMeta.movingAverage.map((point) => `${point.x},${point.y}`).join(" "),
                     fill: "none",
                     stroke: "#ea580c",
-                    strokeWidth: "4.2",
+                    strokeWidth: "7",
                     strokeLinecap: "round",
                     strokeLinejoin: "round",
                   }),
@@ -515,15 +516,21 @@ export function App() {
       openLiveFeed();
 
       try {
-        const trades = await fetchRecentAggTrades("btcusdt", requestStartedAt);
+        const [tradesResult, tickerResult] = await Promise.allSettled([
+          fetchRecentAggTrades("btcusdt", requestStartedAt),
+          fetch24hrTicker("btcusdt"),
+        ]);
+
+        const trades = tradesResult.status === "fulfilled" ? tradesResult.value : [];
+        const dayTicker = tickerResult.status === "fulfilled" ? tickerResult.value : null;
 
         if (disposed) {
           return;
         }
 
-        if (trades.length > 0) {
+        if (trades.length > 1) {
           setMarket((previousState) => {
-            let nextState = buildMarketStateFromAggTrades(previousState, trades, Date.now());
+            let nextState = buildMarketStateFromAggTrades(previousState, trades, dayTicker, Date.now());
 
             bufferedPayloads.forEach((payload) => {
               if (payload.e === "markPriceUpdate") {
@@ -537,42 +544,14 @@ export function App() {
 
             return nextState;
           });
-        } else if (bufferedPayloads.length > 0) {
-          setMarket((previousState) => {
-            let nextState = previousState;
-
-            bufferedPayloads.forEach((payload) => {
-              if (payload.e === "markPriceUpdate") {
-                nextState = applyLivePriceUpdate(nextState, payload);
-              }
-
-              if (payload.e === "aggTrade") {
-                nextState = applyLiveTradeUpdate(nextState, payload);
-              }
-            });
-
-            return nextState;
-          });
+        } else {
+          startMockFeed("Not enough recent Binance trade history. Using mock feed.");
         }
       } catch (error) {
         console.error("Failed to backfill recent Binance trades", error);
 
-        if (!disposed && bufferedPayloads.length > 0) {
-          setMarket((previousState) => {
-            let nextState = previousState;
-
-            bufferedPayloads.forEach((payload) => {
-              if (payload.e === "markPriceUpdate") {
-                nextState = applyLivePriceUpdate(nextState, payload);
-              }
-
-              if (payload.e === "aggTrade") {
-                nextState = applyLiveTradeUpdate(nextState, payload);
-              }
-            });
-
-            return nextState;
-          });
+        if (!disposed) {
+          startMockFeed("Failed to load recent Binance trade history. Using mock feed.");
         }
       }
 
@@ -654,7 +633,7 @@ export function App() {
       openKlineFeed();
 
       try {
-        const klines = await fetchRecentKlines("btcusdt", selectedInterval, 120);
+        const klines = await fetchRecentKlines("btcusdt", selectedInterval, 150);
 
         if (disposed) {
           return;
@@ -672,23 +651,15 @@ export function App() {
       } catch (error) {
         console.error("Failed to fetch recent Binance klines", error);
 
-        if (!disposed && bufferedKlines.length > 0) {
-          setChartState((previousState) => {
-            let nextState = {
-              ...previousState,
-              interval: selectedInterval,
-              candles: [],
-              connectionStatus: "live",
-              connectionLabel: `Binance ${getChartIntervalLabel(selectedInterval)} kline live`,
-              isLoading: false,
-            };
-
-            bufferedKlines.forEach((payload) => {
-              nextState = applyLiveKlineUpdate(nextState, payload, selectedInterval);
-            });
-
-            return nextState;
-          });
+        if (!disposed) {
+          setChartState((previousState) => ({
+            ...previousState,
+            interval: selectedInterval,
+            candles: [],
+            connectionStatus: "error",
+            connectionLabel: `Failed to load Binance ${getChartIntervalLabel(selectedInterval)} history`,
+            isLoading: false,
+          }));
         }
       }
 

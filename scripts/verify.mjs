@@ -33,8 +33,8 @@ assert.equal(initialState.trades.length, 0);
 
 const nextState = advanceMarketState(initialState);
 assert.equal(nextState.isHydrating, false);
-assert.equal(nextState.series.length, 120);
-assert.equal(nextState.candles.length, 120);
+assert.equal(nextState.series.length, 150);
+assert.equal(nextState.candles.length, 150);
 assert.equal(nextState.trades.length, 8);
 assert.equal(nextState.price !== null, true);
 
