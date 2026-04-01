@@ -138,7 +138,7 @@ flowchart TD
 ## 3. 프로젝트 진행 방식
 
 ```mermaid
-flowchart LR
+flowchart TD
     subgraph STEP1["① 개념 정리"]
         A1["Virtual DOM"]
         A2["Diff Algorithm"]
@@ -223,4 +223,3 @@ flowchart LR
 
 각 개념은 따로 이해할 수 있어도, 실제 코드에서 전체 흐름을 파악하는 것이 가장 어려웠다.
 특히 LLM이 작성한 코드를 보면서 흐름을 추적하는 것은 더욱 어려웠다. 코드 자체는 동작하지만 왜 이렇게 연결되어 있는지 맥락을 잡기까지 시간이 많이 걸렸다.
-
