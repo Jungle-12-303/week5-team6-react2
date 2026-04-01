@@ -8,6 +8,9 @@ const SERIES_LENGTH = 120;
 // 계약 히스토리 표에 몇 개의 최근 체결을 유지할지 결정한다.
 const TRADE_HISTORY_LENGTH = 8;
 
+// 차트 interval 선택 버튼에서 사용하는 기본 값이다.
+const DEFAULT_CHART_INTERVAL = "1s";
+
 /**
  * 소수점 자릿수를 통일하기 위한 공용 반올림 함수다.
  */
@@ -46,6 +49,29 @@ function getNiceStep(value) {
   }
 
   return 10 ** (exponent + 1);
+}
+
+/**
+ * 종가 기준 이동평균선을 SVG 좌표 배열로 변환한다.
+ *
+ * period가 5면 최근 5개 캔들의 종가 평균,
+ * period가 20이면 최근 20개 캔들의 종가 평균을 사용한다.
+ */
+function buildMovingAveragePoints(candles, period, step, toY) {
+  const points = [];
+
+  for (let index = period - 1; index < candles.length; index += 1) {
+    const slice = candles.slice(index - period + 1, index + 1);
+    const average = slice.reduce((sum, candle) => sum + candle.close, 0) / period;
+    const centerX = round(index * step + step / 2, 2);
+
+    points.push({
+      x: centerX,
+      y: toY(average),
+    });
+  }
+
+  return points;
 }
 
 /**
@@ -95,6 +121,21 @@ function createTrade(id, price, side, timestamp, amount) {
 }
 
 /**
+ * kline interval 문자열을 사람이 읽기 쉬운 라벨로 바꾼다.
+ */
+export function getChartIntervalLabel(interval) {
+  if (interval === "1s") {
+    return "1s";
+  }
+
+  if (interval === "5m") {
+    return "5m";
+  }
+
+  return "1m";
+}
+
+/**
  * 외부 데이터에서 넘어온 가격 문자열/숫자를 안전하게 숫자로 바꾼다.
  *
  * 값이 비정상이면 fallback 가격을 사용한다.
@@ -102,6 +143,31 @@ function createTrade(id, price, side, timestamp, amount) {
 function normalizePrice(value, fallback = BASE_PRICE) {
   const parsed = Number(value);
   return Number.isFinite(parsed) ? round(parsed, 1) : fallback;
+}
+
+/**
+ * Binance REST/WebSocket kline 데이터를 공통 candle 객체로 변환한다.
+ */
+function normalizeKlineCandle(entry) {
+  if (Array.isArray(entry)) {
+    return createCandle(
+      Number(entry[0]) || Date.now(),
+      Number(entry[1]) || BASE_PRICE,
+      Number(entry[2]) || BASE_PRICE,
+      Number(entry[3]) || BASE_PRICE,
+      Number(entry[4]) || BASE_PRICE,
+      Number(entry[5]) || 0,
+    );
+  }
+
+  return createCandle(
+    Number(entry.t) || Date.now(),
+    Number(entry.o) || BASE_PRICE,
+    Number(entry.h) || BASE_PRICE,
+    Number(entry.l) || BASE_PRICE,
+    Number(entry.c) || BASE_PRICE,
+    Number(entry.v) || 0,
+  );
 }
 
 /**
@@ -146,6 +212,22 @@ function buildFlatSeedCandles(basePrice, now) {
   }
 
   return candles;
+}
+
+/**
+ * 차트용 별도 state의 초기값을 만든다.
+ *
+ * 가격/체결 히스토리와 분리해서, 공식 kline 데이터가 올 때까지
+ * 빈 차트 + loading 상태로 시작한다.
+ */
+export function createInitialChartState() {
+  return {
+    interval: DEFAULT_CHART_INTERVAL,
+    candles: [],
+    connectionStatus: "connecting",
+    connectionLabel: "Loading Binance kline data",
+    isLoading: true,
+  };
 }
 
 /**
@@ -363,6 +445,58 @@ export function buildMarketStateFromAggTrades(previousState, trades, now = Date.
 }
 
 /**
+ * REST로 받아온 kline 배열을 차트 전용 state로 변환한다.
+ */
+export function buildChartStateFromKlines(previousState, klines, interval) {
+  if (!Array.isArray(klines) || klines.length === 0) {
+    return {
+      ...previousState,
+      interval,
+      candles: [],
+      connectionStatus: "live",
+      connectionLabel: `Binance ${getChartIntervalLabel(interval)} kline feed`,
+      isLoading: false,
+    };
+  }
+
+  const candles = klines.map((entry) => normalizeKlineCandle(entry)).slice(-120);
+
+  return {
+    ...previousState,
+    interval,
+    candles,
+    connectionStatus: "live",
+    connectionLabel: `Binance ${getChartIntervalLabel(interval)} kline feed`,
+    isLoading: false,
+  };
+}
+
+/**
+ * 실시간 kline 이벤트를 차트 전용 state에 반영한다.
+ */
+export function applyLiveKlineUpdate(previousState, payload, interval) {
+  const source = payload?.k ?? payload;
+  const nextCandle = normalizeKlineCandle(source);
+  const lastCandle = previousState.candles.at(-1);
+  let candles;
+
+  if (lastCandle && lastCandle.timestamp === nextCandle.timestamp) {
+    candles = [...previousState.candles.slice(0, -1), nextCandle];
+  } else {
+    candles = [...previousState.candles, nextCandle].slice(-120);
+  }
+
+  return {
+    ...previousState,
+    interval,
+    candles,
+    connectionStatus: "live",
+    connectionLabel: `Binance ${getChartIntervalLabel(interval)} kline feed`,
+    isLoading: false,
+  };
+}
+
+/**
  * 앱 시작 시 사용할 초기 market state를 만든다.
  *
  * 실행 순서 A:
@@ -561,7 +695,7 @@ export function applyLiveTradeUpdate(previousState, payload) {
  * 실행 순서 E:
  * App의 useMemo 안에서 호출되어 "그릴 준비가 끝난 차트 데이터"를 만든다.
  */
-export function buildChartMeta(candles, width, height) {
+export function buildChartMeta(candles, width, height, movingAveragePeriod = null) {
   if (!candles.length) {
     return {
       min: 0,
@@ -572,6 +706,7 @@ export function buildChartMeta(candles, width, height) {
       plotHeight: round(height - 28, 2),
       candleWidth: 0,
       axisTicks: [],
+      movingAverage: [],
       candles: [],
     };
   }
@@ -632,6 +767,10 @@ export function buildChartMeta(candles, width, height) {
     };
   });
 
+  const movingAverage = Number.isInteger(movingAveragePeriod) && movingAveragePeriod >= 5 && movingAveragePeriod <= 20
+    ? buildMovingAveragePoints(candles, movingAveragePeriod, step, toY)
+    : [];
+
   return {
     min,
     max,
@@ -641,6 +780,7 @@ export function buildChartMeta(candles, width, height) {
     plotHeight: round(plotHeight, 2),
     candleWidth: round(candleWidth, 2),
     axisTicks,
+    movingAverage,
     candles: candleShapes,
   };
 }
