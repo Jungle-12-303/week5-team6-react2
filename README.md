@@ -27,6 +27,8 @@ React의 핵심 개념을 참고하되, 기존 `react`, `react-dom` 패키지를
 상태 변경 후 업데이트 흐름은 모든 팀이 비슷해 보일 수 있지만, 실제 구현 방식은 꽤 달라질 수 있습니다.  
 이 프로젝트에서 우리 팀이 선택한 방식은 아래와 같습니다.
 
+> **상태가 자주 바뀌는 실시간 화면일수록, DOM 직접 조작보다 state 중심으로 UI를 일관되게 관리할 수 있다는 점이 가장 큰 장점입니다.**
+
 - `setState`는 값을 바로 바꾸지 않고 hook 내부 `queue`에 먼저 저장합니다.
   다음 렌더에서 queue를 순서대로 처리해 최종 state를 확정합니다.
 - 상태 변경 직후 즉시 렌더하지 않고, `scheduleUpdate`로 다음 마이크로태스크에 렌더를 한 번만 예약합니다.
@@ -35,6 +37,8 @@ React의 핵심 개념을 참고하되, 기존 `react`, `react-dom` 패키지를
   즉 `useState`, `useEffect`, `useMemo` 모두 “호출 순서”를 기준으로 같은 배열 안에서 추적합니다.
 - 차트는 외부 차트 라이브러리를 사용하지 않고, `svg`, `line`, `rect`, `polyline`, `text` 같은 SVG DOM 요소를 직접 Virtual DOM으로 생성해 렌더링합니다.
   런타임은 SVG 태그를 `createElementNS(...)`로 실제 SVG DOM에 붙여 실시간 차트를 구성합니다.
+- 차트가 갱신될 때는 최신 candle 배열 전체를 기준으로 `buildChartMeta()`가 x, y, range, 이동평균선 좌표를 다시 계산합니다.
+  그 다음 런타임이 이전 Virtual DOM과 새 Virtual DOM을 비교해, 실제 SVG DOM에서는 바뀐 속성과 노드만 patch합니다.
 - `useEffect`는 DOM patch 이후 실행합니다.
   즉 화면이 먼저 반영된 뒤, WebSocket 연결이나 cleanup 같은 부수효과를 처리합니다.
 - `useMemo`는 deps가 바뀔 때만 다시 계산합니다.
