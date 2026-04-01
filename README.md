@@ -19,57 +19,175 @@ React의 핵심 개념을 참고하되, 기존 `react`, `react-dom` 패키지를
 - 상태는 루트 컴포넌트에서만 관리합니다.
 - 자식 컴포넌트는 props만 받는 stateless 순수 함수 형태를 유지합니다.
 
-## Diagram
+## 1. 코인 실시간 시세를 주제로 데모 웹을 만든 이유
 
-README에서 바로 전체 흐름을 볼 수 있도록 현재 구현 기준 도식을 정리했습니다.  
-더 자세한 설명은 [docs/execution-order-guide.md](./docs/execution-order-guide.md) 와 [docs/06-render-commit-phase.md](./docs/06-render-commit-phase.md) 에 있습니다.
+이 프로젝트의 핵심 목적은 `docs`에 정리한 React 핵심 이론을 실제로 움직이는 예제로 검증하는 것입니다.  
+정적인 Todo 화면보다 **실시간 코인 시세 화면**이 더 적합했던 이유는, 데이터가 계속 바뀌기 때문에 상태 관리와 렌더링 최적화의 의미가 더 분명하게 드러나기 때문입니다.
 
-### 앱 시작 흐름
+[docs/01-virtual-dom.md](./docs/01-virtual-dom.md) 와 [docs/02-diff-algorithm.md](./docs/02-diff-algorithm.md) 에서는 Virtual DOM, Diff, Patch의 필요성을 설명합니다.  
+실시간 가격, 1초 차트, 체결 히스토리처럼 자주 바뀌는 데이터는 "매번 전체 DOM을 다시 그리기"보다 "바뀐 부분만 비교해서 반영하기"가 왜 중요한지 보여주기에 적절합니다.
+
+[docs/03-component.md](./docs/03-component.md), [docs/04-state.md](./docs/04-state.md), [docs/05-hooks.md](./docs/05-hooks.md) 에서는 함수형 컴포넌트, 루트 state, hooks 배열과 hook index 개념을 다룹니다.  
+이 데모에서는 실시간 이벤트를 루트 `App`에 모으고, 자식 컴포넌트는 props만 받게 만들어 문서에서 정의한 `Lifting State Up` 구조를 그대로 따릅니다.
+
+즉, 이 데모 주제는 아래 이론을 한 화면에서 동시에 확인하기 위해 선택했습니다.
+
+- 외부 이벤트가 들어올 때 state가 어떻게 갱신되는가
+- hook queue가 언제 처리되고 최신 state가 확정되는가
+- state가 바뀐 뒤 새 Virtual DOM이 어떻게 만들어지는가
+- 이전 Virtual DOM과 새 Virtual DOM을 어떻게 비교하는가
+- 실제 DOM은 전체 교체가 아니라 어디만 부분 수정되는가
+
+## 2. 동작하는 방식
+
+아래 diagram은 **외부에서 가져다 사용하는 부분**과 **우리가 직접 개발한 부분**을 색으로 구분해서 정리한 것입니다.
+
+- 노란색: 외부 시스템 / 브라우저 기본 기능 / 외부 데이터 소스
+- 파란색: 우리가 직접 구현한 런타임, 상태 관리, 앱 로직
+
+### 2-1. 이론에서 실제 데모까지
 
 ```mermaid
 flowchart TD
-    A["1. Browser loads index.html"] --> B["2. src/main.js runs"]
-    B --> C["3. mountRoot(App, container)"]
-    C --> D["4. FunctionComponent instance is created"]
-    D --> E["5. App() runs"]
-    E --> F["6. Virtual DOM(VNode) tree is created"]
-    F --> G["7. createDomNode() builds real DOM"]
-    G --> H["8. DOM is appended to #app"]
-    H --> I["9. commitEffects() runs"]
-    I --> J["10. useEffect connects Binance feed or mock timer"]
+    A["docs/01-virtual-dom.md"] --> B["VNode tree creation"]
+    C["docs/02-diff-algorithm.md"] --> D["patch(oldVNode, newVNode)"]
+    E["docs/03-component.md"] --> F["FunctionComponent root"]
+    G["docs/04-state.md"] --> H["Root state in App"]
+    I["docs/05-hooks.md"] --> J["useState / useEffect / useMemo"]
+    B --> K["Realtime coin dashboard demo"]
+    D --> K
+    F --> K
+    H --> K
+    J --> K
+
+    classDef doc fill:#fef3c7,stroke:#d97706,color:#92400e;
+    classDef custom fill:#dbeafe,stroke:#2563eb,color:#1e3a8a;
+    class A,C,E,G,I doc;
+    class B,D,F,H,J,K custom;
 ```
 
-### 상태 변경과 Virtual DOM 반영 흐름
+### 2-2. 앱 시작부터 첫 화면 렌더까지
 
 ```mermaid
 flowchart TD
-    A["1. Binance WebSocket event or mock timer fires"] --> B["2. App.js calls setMarket(...)"]
-    B --> C["3. setState pushes update into hook.queue"]
-    C --> D["4. scheduleUpdate(instance) reserves one microtask"]
-    D --> E["5. instance.update() starts"]
-    E --> F["6. useState() reads hook.queue"]
-    F --> G["7. queued updates are reduced into latest hook.state"]
-    G --> H["8. App() runs again with latest state"]
-    H --> I["9. new Virtual DOM tree is created"]
-    I --> J["10. patch(oldVNode, newVNode) compares both trees"]
-    J --> K["11. only changed DOM nodes are updated"]
-    K --> L["12. commitEffects() runs cleanup/effect if needed"]
+    A["Browser loads index.html"] --> B["src/main.js"]
+    B --> C["mountRoot(App, container)"]
+    C --> D["FunctionComponent instance"]
+    D --> E["App()"]
+    E --> F["Virtual DOM(VNode) tree"]
+    F --> G["createDomNode()"]
+    G --> H["Real DOM append"]
+    H --> I["commitEffects()"]
+    I --> J["useEffect starts feed"]
+
+    classDef external fill:#fef3c7,stroke:#d97706,color:#92400e;
+    classDef custom fill:#dbeafe,stroke:#2563eb,color:#1e3a8a;
+    class A,H external;
+    class B,C,D,E,F,G,I,J custom;
 ```
 
-### 데이터 흐름
+### 2-3. 외부 WebSocket과 내부 런타임이 연결되는 방식
 
 ```mermaid
 flowchart LR
-    A["Binance Futures public streams"] --> B["src/app/binance-feed.js"]
-    B --> C["onEvent(payload)"]
-    C --> D["src/app/App.js"]
+    A["Binance Futures WebSocket"] --> B["src/app/binance-feed.js"]
+    B --> C["payload 전달"]
+    C --> D["App.js onEvent"]
     D --> E["setMarket(previousState => nextState)"]
-    E --> F["src/app/market-data.js"]
-    F --> G["next market state"]
-    G --> H["src/lib/runtime.js"]
-    H --> I["Virtual DOM diff / patch"]
-    I --> J["Price panel, chart, contract history UI"]
+    E --> F["hook.queue.push(update)"]
+    F --> G["scheduleUpdate(instance)"]
+    G --> H["next render starts"]
+    H --> I["useState() processes queue"]
+    I --> J["latest hook.state"]
+    J --> K["App() creates new VNode"]
+    K --> L["patch(oldVNode, newVNode)"]
+    L --> M["changed DOM only"]
+    M --> N["Price / Chart / Trades UI"]
+
+    classDef external fill:#fef3c7,stroke:#d97706,color:#92400e;
+    classDef custom fill:#dbeafe,stroke:#2563eb,color:#1e3a8a;
+    class A,C external;
+    class B,D,E,F,G,H,I,J,K,L,M,N custom;
 ```
+
+### 2-4. 무엇을 외부에서 사용했고, 무엇을 직접 만들었는가
+
+- 외부에서 사용한 것
+  - Binance Futures 공개 WebSocket 데이터
+  - 브라우저의 `WebSocket`, `document`, `queueMicrotask`, `setInterval` 같은 기본 Web API
+  - 정적 호스팅 환경
+- 우리가 직접 만든 것
+  - `createElement`
+  - `FunctionComponent`
+  - `useState`, `useEffect`, `useMemo`
+  - `hook.queue` 기반 상태 갱신 처리
+  - `patch()` 기반 Virtual DOM diff/patch
+  - 비트코인 대시보드 UI와 데이터 가공 로직
+
+즉, 외부에서 가져온 것은 **시장 데이터와 브라우저 기본 기능**이고, 화면이 갱신되는 핵심 로직은 우리가 직접 구현한 런타임이 담당합니다.
+
+## 3. 프로젝트 진행 방식
+
+이 프로젝트는 한 번에 전체 앱을 만들기보다, 이론 정리와 구현 단계를 분리해서 진행했습니다.
+
+### 3-1. docs 기술 정리
+
+먼저 React 핵심 기능을 문서로 나눠 정리했습니다.
+
+- [docs/01-virtual-dom.md](./docs/01-virtual-dom.md)
+- [docs/02-diff-algorithm.md](./docs/02-diff-algorithm.md)
+- [docs/03-component.md](./docs/03-component.md)
+- [docs/04-state.md](./docs/04-state.md)
+- [docs/05-hooks.md](./docs/05-hooks.md)
+- [docs/06-render-commit-phase.md](./docs/06-render-commit-phase.md)
+
+그리고 현재 코드 기준 실행 순서를 따로 정리했습니다.
+
+- [docs/execution-order-guide.md](./docs/execution-order-guide.md)
+
+### 3-2. 프롬포트 정리
+
+설계 의도를 유지하면서 구현을 요청할 수 있도록 프롬프트 문서도 따로 정리했습니다.
+
+- [docs/implementation-prompt.md](./docs/implementation-prompt.md)
+- [docs/core-implementation-prompt.md](./docs/core-implementation-prompt.md)
+- [docs/bitcoin-ui-prompt.md](./docs/bitcoin-ui-prompt.md)
+- [docs/realtime-data-connection-prompt.md](./docs/realtime-data-connection-prompt.md)
+- [docs/run-implementation-prompt.md](./docs/run-implementation-prompt.md)
+
+### 3-3. mock 데이터로 먼저 개발
+
+처음부터 실제 거래소 데이터를 붙이지 않고, 먼저 mock 데이터로 아래 흐름을 검증했습니다.
+
+- 루트 state 관리 구조
+- hook queue 기반 상태 갱신
+- Virtual DOM 생성
+- diff / patch
+- 1초 단위 차트와 체결 히스토리 렌더링
+
+이 단계의 목적은 네트워크 이슈 없이도 **우리 런타임 자체가 정상 동작하는지** 먼저 확인하는 것이었습니다.
+
+### 3-4. 실제 WebSocket 연동
+
+그 다음 mock 기반 구조를 유지한 상태에서 Binance Futures 공개 WebSocket을 연동했습니다.
+
+- `btcusdt@markPrice@1s`
+- `btcusdt@aggTrade`
+
+이렇게 해서
+
+- 가격
+- 1초 캔들 차트
+- 계약 체결 히스토리
+
+를 실제 시장 데이터로 갱신하도록 확장했습니다.  
+또한 연결 실패 시 mock 데이터로 fallback 하도록 해서, 학습용 데모가 네트워크 문제로 완전히 죽지 않게 구성했습니다.
+
+## 4. 회고
+
+이 섹션은 추후 팀원들이 프로젝트를 진행하면서 느낀 점, 아쉬웠던 점, 개선하고 싶은 점을 정리하는 공간입니다.
+
+- 추후 작성 예정
 
 ## 현재 구현된 내부 로직
 
@@ -228,3 +346,11 @@ npm run verify
 - 현재는 호가창(order book)을 구현하지 않았습니다.
 - Binance 연결은 공개 market stream 기준이며, 실패 시 mock으로 대체됩니다.
 - 다음 단계에서는 실제 order book 동기화, Vercel 배포 최적화, 런타임 기능 확장을 진행할 수 있습니다.
+
+## 추가하면 좋을 부분
+
+- 실제 order book 동기화 구조와 snapshot + diff 처리 설명
+- runtime 내부의 `useState`, `scheduleUpdate`, `patch`를 코드 라인 기준으로 따라가는 상세 가이드
+- mock 데이터 단계와 live WebSocket 단계의 차이를 비교한 문서
+- 현재 diff/patch가 실제로 어느 DOM만 바꾸는지 보여주는 debug panel
+- 팀 회고가 채워진 뒤, 구현 결정 이유와 트레이드오프를 따로 정리한 섹션
