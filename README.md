@@ -16,7 +16,7 @@ React의 핵심 개념을 참고하되, 기존 `react`, `react-dom` 패키지를
 
 ### 2-1. 최초 렌더 흐름
 
-![최초 렌더 흐름](./docs/assets/mermaid-diagram-2-1png.png)
+![최초 렌더 흐름](./docs/assets/mermaid-diagram-2-1.png)
 
 ### 2-2. 상태 변경 후 업데이트 흐름
 
@@ -59,7 +59,7 @@ React의 핵심 개념을 참고하되, 기존 `react`, `react-dom` 패키지를
 ## 3. 프로젝트 진행 방식
 
 <p align="center">
-  <img src="./docs/assets/mermaid-diagram-3-1.png" alt="프로젝트 진행 방식" width="350" />
+  <img src="./docs/assets/mermaid-diagram-3-1.png" alt="프로젝트 진행 방식" width="200" />
 </p>
 
 
