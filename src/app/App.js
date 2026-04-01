@@ -93,16 +93,16 @@ function ChartPanel({ market, chartMeta }) {
       h(
         "div",
         null,
-        h("h2", { className: "panel-title" }, "Realtime Price Graph"),
-        h("p", { className: "panel-subtitle" }, `${market.feedMode === "live" ? "Binance markPrice@1s" : "Mock tick"} 기준으로 ${market.series.length}개 포인트를 유지합니다.`),
+        h("h2", { className: "panel-title" }, "Realtime 1s Candle Chart"),
+        h("p", { className: "panel-subtitle" }, `${market.feedMode === "live" ? "Binance aggTrade" : "Mock trades"}를 1초 OHLC 캔들로 집계해 약 ${market.candles.length}초 범위를 유지합니다.`),
       ),
       h("span", { className: "meta-chip" }, `Range ${formatPrice(chartMeta.min)} - ${formatPrice(chartMeta.max)}`),
     ),
     h(
       "div",
       { className: "chart-legend" },
-      h("span", { className: "legend-item" }, h("span", { className: "legend-swatch swatch-line" }), "Last price line"),
-      h("span", { className: "legend-item" }, h("span", { className: "legend-swatch swatch-fill" }), "Realtime area"),
+      h("span", { className: "legend-item" }, h("span", { className: "legend-swatch swatch-fill" }), "Bullish candle"),
+      h("span", { className: "legend-item" }, h("span", { className: "legend-swatch swatch-line" }), "Bearish candle"),
     ),
     h(
       "div",
@@ -110,25 +110,29 @@ function ChartPanel({ market, chartMeta }) {
       h(
         "svg",
         { className: "chart-canvas", viewBox: "0 0 640 320", preserveAspectRatio: "none" },
-        h(
-          "defs",
-          null,
-          h(
-            "linearGradient",
-            { id: "chart-fill", x1: "0", x2: "0", y1: "0", y2: "1" },
-            h("stop", { offset: "0%", stopColor: "rgba(99, 179, 255, 0.34)" }),
-            h("stop", { offset: "100%", stopColor: "rgba(99, 179, 255, 0.02)" }),
-          ),
-        ),
-        h("polygon", { points: chartMeta.areaPoints, fill: "url(#chart-fill)" }),
-        h("polyline", {
-          points: chartMeta.linePoints,
-          fill: "none",
-          stroke: "#f7b731",
-          strokeWidth: "4",
-          strokeLinecap: "round",
-          strokeLinejoin: "round",
-        }),
+        chartMeta.candles.map((candle) => [
+          h("line", {
+            key: `wick-${candle.key}`,
+            x1: String(candle.centerX),
+            x2: String(candle.centerX),
+            y1: String(candle.highY),
+            y2: String(candle.lowY),
+            stroke: candle.color,
+            strokeWidth: "1.5",
+            strokeLinecap: "round",
+          }),
+          h("rect", {
+            key: `body-${candle.key}`,
+            x: String(candle.bodyX),
+            y: String(candle.bodyY),
+            width: String(candle.bodyWidth),
+            height: String(candle.bodyHeight),
+            rx: "1.5",
+            fill: candle.rising ? "rgba(45, 212, 191, 0.88)" : "rgba(251, 113, 133, 0.88)",
+            stroke: candle.color,
+            strokeWidth: "1",
+          }),
+        ]),
       ),
     ),
   );
@@ -284,7 +288,7 @@ export function App() {
     };
   }, []);
 
-  const chartMeta = useMemo(() => buildChartMeta(market.series, 640, 320), [market.series]);
+  const chartMeta = useMemo(() => buildChartMeta(market.candles, 640, 320), [market.candles]);
 
   return h(
     "main",

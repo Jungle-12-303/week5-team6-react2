@@ -47,7 +47,7 @@ export function createElement(type, props, ...children) {
 }
 
 function isSvgType(type) {
-  return ["svg", "path", "polyline", "polygon", "line", "circle", "defs", "linearGradient", "stop"].includes(type);
+  return ["svg", "path", "polyline", "polygon", "line", "circle", "rect", "defs", "linearGradient", "stop"].includes(type);
 }
 
 function createDomNode(vnode, namespace = null) {

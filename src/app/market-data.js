@@ -1,5 +1,5 @@
 const BASE_PRICE = 69043.3;
-const SERIES_LENGTH = 24;
+const SERIES_LENGTH = 120;
 const TRADE_HISTORY_LENGTH = 8;
 
 function round(value, digits = 1) {
@@ -11,6 +11,17 @@ function createSeriesPoint(price, timestamp) {
   return {
     price: round(price, 1),
     timestamp,
+  };
+}
+
+function createCandle(timestamp, open, high, low, close, volume = 0) {
+  return {
+    timestamp,
+    open: round(open, 1),
+    high: round(high, 1),
+    low: round(low, 1),
+    close: round(close, 1),
+    volume: round(volume, 3),
   };
 }
 
@@ -29,16 +40,38 @@ function normalizePrice(value, fallback = BASE_PRICE) {
   return Number.isFinite(parsed) ? round(parsed, 1) : fallback;
 }
 
-function buildSeries(basePrice, now) {
-  const series = [];
+function buildSeedCandles(basePrice, now) {
+  const candles = [];
   let price = basePrice - 86;
 
   for (let index = 0; index < SERIES_LENGTH; index += 1) {
-    price += (Math.sin(index * 0.72) + Math.cos(index * 0.41)) * 11 + (index % 3 === 0 ? 5 : -2);
-    series.push(createSeriesPoint(price, now - (SERIES_LENGTH - index) * 1000));
+    const open = price;
+    const movement = (Math.sin(index * 0.72) + Math.cos(index * 0.41)) * 11 + (index % 3 === 0 ? 5 : -2);
+    const close = round(open + movement, 1);
+    const high = Math.max(open, close) + 2.4 + (index % 4);
+    const low = Math.min(open, close) - 2.1 - ((index + 1) % 3);
+    const timestamp = now - (SERIES_LENGTH - index) * 1000;
+
+    candles.push(createCandle(timestamp, open, high, low, close, 0.24 + index * 0.014));
+    price = close;
   }
 
-  return series;
+  return candles;
+}
+
+function buildFlatSeedCandles(basePrice, now) {
+  const candles = [];
+
+  for (let index = 0; index < SERIES_LENGTH; index += 1) {
+    const timestamp = now - (SERIES_LENGTH - index) * 1000;
+    candles.push(createCandle(timestamp, basePrice, basePrice, basePrice, basePrice, 0));
+  }
+
+  return candles;
+}
+
+function candlesToSeries(candles) {
+  return candles.map((candle) => createSeriesPoint(candle.close, candle.timestamp));
 }
 
 function buildTrades(series) {
@@ -84,15 +117,40 @@ function computeSessionStats(series, volumeBtc, volumeUsdt) {
   };
 }
 
-function pushSeriesPoint(series, price, timestamp) {
-  const normalized = createSeriesPoint(price, timestamp);
-  const previousPoint = series.at(-1);
+function pushCandle(candles, price, timestamp, volume = 0) {
+  const bucketTimestamp = Math.floor(timestamp / 1000) * 1000;
+  const lastCandle = candles.at(-1);
 
-  if (previousPoint && Math.floor(previousPoint.timestamp / 1000) === Math.floor(timestamp / 1000)) {
-    return [...series.slice(0, -1), normalized];
+  if (!lastCandle) {
+    return [createCandle(bucketTimestamp, price, price, price, price, volume)];
   }
 
-  return [...series.slice(-(SERIES_LENGTH - 1)), normalized];
+  const nextCandles = [...candles];
+
+  if (lastCandle.timestamp === bucketTimestamp) {
+    nextCandles[nextCandles.length - 1] = createCandle(
+      lastCandle.timestamp,
+      lastCandle.open,
+      Math.max(lastCandle.high, price),
+      Math.min(lastCandle.low, price),
+      price,
+      lastCandle.volume + volume,
+    );
+    return nextCandles;
+  }
+
+  let previousClose = lastCandle.close;
+  let nextTimestamp = lastCandle.timestamp + 1000;
+
+  while (nextTimestamp < bucketTimestamp) {
+    nextCandles.push(createCandle(nextTimestamp, previousClose, previousClose, previousClose, previousClose, 0));
+    previousClose = nextCandles.at(-1).close;
+    nextTimestamp += 1000;
+  }
+
+  nextCandles.push(createCandle(bucketTimestamp, previousClose, Math.max(previousClose, price), Math.min(previousClose, price), price, volume));
+
+  return nextCandles.slice(-SERIES_LENGTH);
 }
 
 function upsertTrade(trades, trade) {
@@ -104,11 +162,34 @@ function upsertTrade(trades, trade) {
   return nextTrades.slice(-TRADE_HISTORY_LENGTH);
 }
 
+function bootstrapLiveState(previousState, price, timestamp, amount = 0, trade = null) {
+  const candles = pushCandle(buildFlatSeedCandles(price, timestamp), price, timestamp, amount);
+  const series = candlesToSeries(candles);
+  const stats = computeSessionStats(series, amount, amount * price);
+
+  return {
+    ...previousState,
+    price,
+    previousClose: price,
+    change: 0,
+    changePercent: 0,
+    lastUpdated: timestamp,
+    candles,
+    series,
+    trades: trade ? upsertTrade([], trade) : [],
+    stats,
+    feedMode: "live",
+    connectionStatus: "live",
+    connectionLabel: "Binance Futures live feed",
+  };
+}
+
 export function createInitialMarketState() {
   const now = Date.now();
-  const series = buildSeries(BASE_PRICE, now);
-  const price = series.at(-1).price;
-  const previousClose = series.at(-2).price;
+  const candles = buildSeedCandles(BASE_PRICE, now);
+  const series = candlesToSeries(candles);
+  const price = candles.at(-1).close;
+  const previousClose = candles.at(-2).close;
   const change = round(price - previousClose, 1);
   const changePercent = round((change / previousClose) * 100, 2);
 
@@ -119,6 +200,7 @@ export function createInitialMarketState() {
     change,
     changePercent,
     lastUpdated: now,
+    candles,
     series,
     trades: buildTrades(series),
     stats: computeStats(series, price),
@@ -134,7 +216,8 @@ export function advanceMarketState(previousState) {
   const variance = Math.cos(now / 1700) * 6;
   const drift = (Math.random() - 0.5) * 14;
   const price = round(previousState.price + directionBias * 0.2 + variance * 0.18 + drift, 1);
-  const series = [...previousState.series.slice(1), createSeriesPoint(price, now)];
+  const candles = pushCandle(previousState.candles, price, now, 0.35 + Math.random() * 0.85);
+  const series = candlesToSeries(candles);
   const previousClose = previousState.price;
   const change = round(price - previousClose, 1);
   const changePercent = round((change / previousClose) * 100, 2);
@@ -152,6 +235,7 @@ export function advanceMarketState(previousState) {
     change,
     changePercent,
     lastUpdated: now,
+    candles,
     series,
     trades,
     stats: computeStats(series, price),
@@ -172,11 +256,14 @@ export function setMarketConnection(previousState, status, label) {
 export function applyLivePriceUpdate(previousState, payload) {
   const timestamp = Number(payload.E) || Date.now();
   const price = normalizePrice(payload.p, previousState.price);
+
+  if (previousState.feedMode !== "live") {
+    return bootstrapLiveState(previousState, price, timestamp);
+  }
+
   const previousClose = previousState.price;
   const change = round(price - previousClose, 1);
   const changePercent = previousClose === 0 ? 0 : round((change / previousClose) * 100, 2);
-  const series = pushSeriesPoint(previousState.series, price, timestamp);
-  const stats = computeSessionStats(series, previousState.stats.volumeBtc, previousState.stats.volumeUsdt);
 
   return {
     ...previousState,
@@ -185,8 +272,6 @@ export function applyLivePriceUpdate(previousState, payload) {
     change,
     changePercent,
     lastUpdated: timestamp,
-    series,
-    stats,
     feedMode: "live",
     connectionStatus: "live",
     connectionLabel: "Binance Futures live feed",
@@ -199,38 +284,74 @@ export function applyLiveTradeUpdate(previousState, payload) {
   const amount = Number(payload.q) || 0;
   const side = payload.m ? "SELL" : "BUY";
   const trade = createTrade(String(payload.a ?? timestamp), price, side, timestamp, amount);
+
+  if (previousState.feedMode !== "live") {
+    return bootstrapLiveState(previousState, price, timestamp, amount, trade);
+  }
+
+  const candles = pushCandle(previousState.candles, price, timestamp, amount);
+  const series = candlesToSeries(candles);
   const volumeBtc = previousState.stats.volumeBtc + amount;
   const volumeUsdt = previousState.stats.volumeUsdt + amount * price;
-  const stats = computeSessionStats(previousState.series, volumeBtc, volumeUsdt);
+  const stats = computeSessionStats(series, volumeBtc, volumeUsdt);
 
   return {
     ...previousState,
+    price,
+    previousClose: previousState.price,
+    change: round(price - previousState.price, 1),
+    changePercent: previousState.price === 0 ? 0 : round(((price - previousState.price) / previousState.price) * 100, 2),
+    lastUpdated: timestamp,
+    candles,
+    series,
     trades: upsertTrade(previousState.trades, trade),
     stats,
-    feedMode: previousState.feedMode === "live" ? "live" : previousState.feedMode,
+    feedMode: "live",
+    connectionStatus: "live",
+    connectionLabel: "Binance Futures live feed",
   };
 }
 
-export function buildChartMeta(series, width, height) {
-  const prices = series.map((entry) => entry.price);
-  const min = Math.min(...prices);
-  const max = Math.max(...prices);
+export function buildChartMeta(candles, width, height) {
+  const lows = candles.map((candle) => candle.low);
+  const highs = candles.map((candle) => candle.high);
+  const min = Math.min(...lows);
+  const max = Math.max(...highs);
   const spread = Math.max(max - min, 1);
+  const step = width / Math.max(candles.length, 1);
+  const candleWidth = Math.max(step * 0.62, 2);
+  const toY = (price) => round(height - ((price - min) / spread) * height, 2);
+  const candleShapes = candles.map((candle, index) => {
+    const centerX = round(index * step + step / 2, 2);
+    const openY = toY(candle.open);
+    const closeY = toY(candle.close);
+    const highY = toY(candle.high);
+    const lowY = toY(candle.low);
+    const rising = candle.close >= candle.open;
+    const bodyTop = Math.min(openY, closeY);
+    const bodyHeight = Math.max(Math.abs(closeY - openY), 1.5);
 
-  const coordinates = series.map((entry, index) => {
-    const x = (index / Math.max(series.length - 1, 1)) * width;
-    const y = height - ((entry.price - min) / spread) * height;
     return {
-      x: round(x, 2),
-      y: round(y, 2),
+      key: `${candle.timestamp}-${index}`,
+      centerX,
+      openY,
+      closeY,
+      highY,
+      lowY,
+      bodyX: round(centerX - candleWidth / 2, 2),
+      bodyY: round(bodyTop, 2),
+      bodyWidth: round(candleWidth, 2),
+      bodyHeight: round(bodyHeight, 2),
+      color: rising ? "#2dd4bf" : "#fb7185",
+      rising,
     };
   });
 
   return {
     min,
     max,
-    linePoints: coordinates.map(({ x, y }) => `${x},${y}`).join(" "),
-    areaPoints: `0,${height} ${coordinates.map(({ x, y }) => `${x},${y}`).join(" ")} ${width},${height}`,
+    candleWidth: round(candleWidth, 2),
+    candles: candleShapes,
   };
 }
 
