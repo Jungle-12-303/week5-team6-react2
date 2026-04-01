@@ -146,6 +146,8 @@ flowchart TD
   그래서 짧은 시간 안에 여러 상태 변경이 들어와도 한 번의 업데이트 흐름으로 묶을 수 있습니다.
 - hooks는 컴포넌트 인스턴스 내부의 `hooks` 배열과 `hookIndex`로 관리합니다.
   즉 `useState`, `useEffect`, `useMemo` 모두 “호출 순서”를 기준으로 같은 배열 안에서 추적합니다.
+- 차트는 외부 차트 라이브러리를 사용하지 않고, `svg`, `line`, `rect`, `polyline`, `text` 같은 SVG DOM 요소를 직접 Virtual DOM으로 생성해 렌더링합니다.
+  런타임은 SVG 태그를 `createElementNS(...)`로 실제 SVG DOM에 붙여 실시간 차트를 구성합니다.
 - `useEffect`는 DOM patch 이후 실행합니다.
   즉 화면이 먼저 반영된 뒤, WebSocket 연결이나 cleanup 같은 부수효과를 처리합니다.
 - `useMemo`는 deps가 바뀔 때만 다시 계산합니다.
