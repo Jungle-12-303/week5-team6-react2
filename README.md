@@ -21,6 +21,8 @@ React의 핵심 개념을 참고하되, 기존 `react`, `react-dom` 패키지를
 
 ## 1. 코인 실시간 시세를 주제로 데모 웹을 만든 이유
 
+![BTC Live Board Demo](./docs/assets/btc-live-board-demo-screenshot.png)
+
 이 프로젝트의 핵심 목적은 `docs`에 정리한 React 핵심 이론을 실제로 움직이는 예제로 검증하는 것입니다.  
 정적인 Todo 화면보다 **실시간 코인 시세 화면**이 더 적합했던 이유는, 데이터가 계속 바뀌기 때문에 상태 관리와 렌더링 최적화의 의미가 더 분명하게 드러나기 때문입니다.
 
