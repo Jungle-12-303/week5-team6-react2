@@ -19,6 +19,58 @@ React의 핵심 개념을 참고하되, 기존 `react`, `react-dom` 패키지를
 - 상태는 루트 컴포넌트에서만 관리합니다.
 - 자식 컴포넌트는 props만 받는 stateless 순수 함수 형태를 유지합니다.
 
+## Diagram
+
+README에서 바로 전체 흐름을 볼 수 있도록 현재 구현 기준 도식을 정리했습니다.  
+더 자세한 설명은 [docs/execution-order-guide.md](./docs/execution-order-guide.md) 와 [docs/06-render-commit-phase.md](./docs/06-render-commit-phase.md) 에 있습니다.
+
+### 앱 시작 흐름
+
+```mermaid
+flowchart TD
+    A["1. Browser loads index.html"] --> B["2. src/main.js runs"]
+    B --> C["3. mountRoot(App, container)"]
+    C --> D["4. FunctionComponent instance is created"]
+    D --> E["5. App() runs"]
+    E --> F["6. Virtual DOM(VNode) tree is created"]
+    F --> G["7. createDomNode() builds real DOM"]
+    G --> H["8. DOM is appended to #app"]
+    H --> I["9. commitEffects() runs"]
+    I --> J["10. useEffect connects Binance feed or mock timer"]
+```
+
+### 상태 변경과 Virtual DOM 반영 흐름
+
+```mermaid
+flowchart TD
+    A["1. Binance WebSocket event or mock timer fires"] --> B["2. App.js calls setMarket(...)"]
+    B --> C["3. setState pushes update into hook.queue"]
+    C --> D["4. scheduleUpdate(instance) reserves one microtask"]
+    D --> E["5. instance.update() starts"]
+    E --> F["6. useState() reads hook.queue"]
+    F --> G["7. queued updates are reduced into latest hook.state"]
+    G --> H["8. App() runs again with latest state"]
+    H --> I["9. new Virtual DOM tree is created"]
+    I --> J["10. patch(oldVNode, newVNode) compares both trees"]
+    J --> K["11. only changed DOM nodes are updated"]
+    K --> L["12. commitEffects() runs cleanup/effect if needed"]
+```
+
+### 데이터 흐름
+
+```mermaid
+flowchart LR
+    A["Binance Futures public streams"] --> B["src/app/binance-feed.js"]
+    B --> C["onEvent(payload)"]
+    C --> D["src/app/App.js"]
+    D --> E["setMarket(previousState => nextState)"]
+    E --> F["src/app/market-data.js"]
+    F --> G["next market state"]
+    G --> H["src/lib/runtime.js"]
+    H --> I["Virtual DOM diff / patch"]
+    I --> J["Price panel, chart, contract history UI"]
+```
+
 ## 현재 구현된 내부 로직
 
 ### 1. 커스텀 Virtual DOM 런타임
