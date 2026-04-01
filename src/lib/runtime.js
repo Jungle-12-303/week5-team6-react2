@@ -83,7 +83,7 @@ export function createElement(type, props, ...children) {
  * SVG는 document.createElement 대신 document.createElementNS를 사용해야 한다.
  */
 function isSvgType(type) {
-  return ["svg", "path", "polyline", "polygon", "line", "circle", "rect", "defs", "linearGradient", "stop"].includes(type);
+  return ["svg", "path", "polyline", "polygon", "line", "circle", "rect", "text", "defs", "linearGradient", "stop"].includes(type);
 }
 
 /**

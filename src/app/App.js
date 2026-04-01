@@ -4,8 +4,10 @@ import {
   applyLivePriceUpdate,
   applyLiveTradeUpdate,
   buildChartMeta,
+  buildMarketStateFromAggTrades,
   createInitialMarketState,
   formatAmount,
+  formatAxisTick,
   formatClock,
   formatCompactNumber,
   formatPrice,
@@ -13,7 +15,7 @@ import {
   formatSignedPrice,
   setMarketConnection,
 } from "./market-data.js";
-import { connectBinanceFeed } from "./binance-feed.js";
+import { connectBinanceFeed, fetchRecentAggTrades } from "./binance-feed.js";
 
 /**
  * Header는 페이지 최상단 소개 영역을 렌더링한다.
@@ -24,6 +26,9 @@ import { connectBinanceFeed } from "./binance-feed.js";
  * 이 컴포넌트는 hook을 사용하지 않고, 부모가 내려준 값만 그대로 읽는다.
  */
 function Header({ market }) {
+  const feedStatusLabel = market.feedMode === "live" ? "Live WebSocket" : market.feedMode === "mock" ? "Mock Data" : "Loading";
+  const feedStatusClass = market.feedMode === "live" ? "positive" : market.feedMode === "mock" ? "negative" : "";
+
   return h(
     "section",
     { className: "hero" },
@@ -31,19 +36,12 @@ function Header({ market }) {
       "div",
       { className: "hero-copy" },
       h("span", { className: "eyebrow" }, "Custom Runtime Only"),
-      h("h1", null, "BTC Live Board"),
-      h(
-        "p",
-        null,
-        "기존 React 패키지 없이 우리가 만든 런타임만으로 렌더링되는 비트코인 실시간 대시보드입니다. Binance Futures 공개 WebSocket 시장 데이터를 우선 사용하고, 연결 실패 시에만 mock 피드로 대체합니다.",
-      ),
+      h("h1", null, "Bitcoin Live Board"),
     ),
     h(
       "div",
       { className: "hero-meta" },
-      h("span", { className: "meta-chip" }, `Render Engine: FunctionComponent + Hooks`),
-      h("span", { className: "meta-chip" }, `Feed: ${market.connectionLabel}`),
-      h("span", { className: "meta-chip" }, `Last Tick: ${formatClock(market.lastUpdated)}`),
+      h("span", { className: `meta-chip ${feedStatusClass}` }, `${feedStatusLabel}: ${market.connectionLabel}`),
     ),
   );
 }
@@ -55,7 +53,15 @@ function Header({ market }) {
  * 즉 "데이터를 계산해서 보관"하지 않고, 전달받은 market을 화면에만 표시한다.
  */
 function PricePanel({ market }) {
+  const isLoading = market.isHydrating;
   const trendClass = market.change >= 0 ? "positive" : "negative";
+  const priceText = isLoading || market.price === null ? "Loading..." : formatPrice(market.price);
+  const changeText = isLoading ? "" : formatSignedPercent(market.changePercent);
+  const noteText = isLoading ? "최근 Binance 거래를 불러오는 중입니다." : `Tick delta ${formatSignedPrice(market.change)} · Updated ${formatClock(market.lastUpdated)}`;
+  const highText = isLoading || market.stats.high === null ? "—" : formatPrice(market.stats.high);
+  const lowText = isLoading || market.stats.low === null ? "—" : formatPrice(market.stats.low);
+  const volumeBtcText = isLoading ? "—" : formatAmount(market.stats.volumeBtc);
+  const volumeUsdtText = isLoading ? "—" : formatCompactNumber(market.stats.volumeUsdt);
 
   return h(
     "section",
@@ -80,18 +86,18 @@ function PricePanel({ market }) {
         h(
           "div",
           { className: "price-value" },
-          h("span", { className: `price-number ${trendClass}` }, formatPrice(market.price)),
-          h("span", { className: `price-delta ${trendClass}` }, formatSignedPercent(market.changePercent)),
+          h("span", { className: `price-number ${isLoading ? "" : trendClass}` }, priceText),
+          changeText ? h("span", { className: `price-delta ${trendClass}` }, changeText) : null,
         ),
-        h("div", { className: "price-note" }, `Tick delta ${formatSignedPrice(market.change)} · Updated ${formatClock(market.lastUpdated)}`),
+        h("div", { className: "price-note" }, noteText),
       ),
       h(
         "div",
         { className: "stats-grid" },
-        h("article", { className: "stat-card" }, h("div", { className: "stat-label" }, "Session High"), h("div", { className: "stat-value" }, formatPrice(market.stats.high))),
-        h("article", { className: "stat-card" }, h("div", { className: "stat-label" }, "Session Low"), h("div", { className: "stat-value" }, formatPrice(market.stats.low))),
-        h("article", { className: "stat-card" }, h("div", { className: "stat-label" }, "Feed Volume (BTC)"), h("div", { className: "stat-value" }, formatAmount(market.stats.volumeBtc))),
-        h("article", { className: "stat-card" }, h("div", { className: "stat-label" }, "Feed Volume (USDT)"), h("div", { className: "stat-value" }, formatCompactNumber(market.stats.volumeUsdt))),
+        h("article", { className: "stat-card" }, h("div", { className: "stat-label" }, "Session High"), h("div", { className: "stat-value" }, highText)),
+        h("article", { className: "stat-card" }, h("div", { className: "stat-label" }, "Session Low"), h("div", { className: "stat-value" }, lowText)),
+        h("article", { className: "stat-card" }, h("div", { className: "stat-label" }, "Feed Volume (BTC)"), h("div", { className: "stat-value" }, volumeBtcText)),
+        h("article", { className: "stat-card" }, h("div", { className: "stat-label" }, "Feed Volume (USDT)"), h("div", { className: "stat-value" }, volumeUsdtText)),
       ),
     ),
   );
@@ -105,56 +111,85 @@ function PricePanel({ market }) {
  * - 이 컴포넌트는 "좌표를 해석해서 SVG 요소를 만든다"는 역할만 한다.
  */
 function ChartPanel({ market, chartMeta }) {
+  const isLoading = market.isHydrating && market.candles.length === 0;
+
   return h(
     "section",
     { className: "panel chart-panel" },
     h(
       "div",
       { className: "panel-header" },
-      h(
-        "div",
-        null,
-        h("h2", { className: "panel-title" }, "Realtime 1s Candle Chart"),
-        h("p", { className: "panel-subtitle" }, `${market.feedMode === "live" ? "Binance aggTrade" : "Mock trades"}를 1초 OHLC 캔들로 집계해 약 ${market.candles.length}초 범위를 유지합니다.`),
-      ),
-      h("span", { className: "meta-chip" }, `Range ${formatPrice(chartMeta.min)} - ${formatPrice(chartMeta.max)}`),
-    ),
-    h(
-      "div",
-      { className: "chart-legend" },
-      h("span", { className: "legend-item" }, h("span", { className: "legend-swatch swatch-fill" }), "Bullish candle"),
-      h("span", { className: "legend-item" }, h("span", { className: "legend-swatch swatch-line" }), "Bearish candle"),
+      h("div", null, h("h2", { className: "panel-title" }, "Realtime 1s Candle Chart")),
     ),
     h(
       "div",
       { className: "chart-frame" },
-      h(
-        "svg",
-        { className: "chart-canvas", viewBox: "0 0 640 320", preserveAspectRatio: "none" },
-        chartMeta.candles.map((candle) => [
-          h("line", {
-            key: `wick-${candle.key}`,
-            x1: String(candle.centerX),
-            x2: String(candle.centerX),
-            y1: String(candle.highY),
-            y2: String(candle.lowY),
-            stroke: candle.color,
-            strokeWidth: "1.5",
-            strokeLinecap: "round",
-          }),
-          h("rect", {
-            key: `body-${candle.key}`,
-            x: String(candle.bodyX),
-            y: String(candle.bodyY),
-            width: String(candle.bodyWidth),
-            height: String(candle.bodyHeight),
-            rx: "1.5",
-            fill: candle.rising ? "rgba(45, 212, 191, 0.88)" : "rgba(251, 113, 133, 0.88)",
-            stroke: candle.color,
-            strokeWidth: "1",
-          }),
-        ]),
-      ),
+      isLoading
+        ? h(
+            "div",
+            { className: "chart-loading" },
+            h("div", { className: "chart-loading-title" }, "Loading chart"),
+            h("div", { className: "chart-loading-copy" }, "이전 거래 데이터를 받아와 실시간 차트를 초기화하는 중입니다."),
+          )
+        : h(
+            "svg",
+            { className: "chart-canvas", viewBox: "0 0 640 320", preserveAspectRatio: "none" },
+            h("line", {
+              x1: String(chartMeta.plotWidth),
+              x2: String(chartMeta.plotWidth),
+              y1: "0",
+              y2: "320",
+              stroke: "rgba(149, 163, 194, 0.24)",
+              strokeWidth: "1",
+            }),
+            chartMeta.axisTicks.map((tick) => [
+              h("line", {
+                key: `tick-line-${tick.key}`,
+                x1: String(chartMeta.plotWidth),
+                x2: "640",
+                y1: String(tick.y),
+                y2: String(tick.y),
+                stroke: "rgba(149, 163, 194, 0.14)",
+                strokeWidth: "1",
+              }),
+              h(
+                "text",
+                {
+                  key: `tick-label-${tick.key}`,
+                  x: String(chartMeta.plotWidth + 42),
+                  y: String(tick.y),
+                  fill: "rgba(237, 243, 255, 0.82)",
+                  "font-size": "11",
+                  "text-anchor": "end",
+                  "dominant-baseline": "middle",
+                },
+                formatAxisTick(tick.value, chartMeta.axisStep),
+              ),
+            ]),
+            chartMeta.candles.map((candle) => [
+              h("line", {
+                key: `wick-${candle.key}`,
+                x1: String(candle.centerX),
+                x2: String(candle.centerX),
+                y1: String(candle.highY),
+                y2: String(candle.lowY),
+                stroke: candle.color,
+                strokeWidth: "1.5",
+                strokeLinecap: "round",
+              }),
+              h("rect", {
+                key: `body-${candle.key}`,
+                x: String(candle.bodyX),
+                y: String(candle.bodyY),
+                width: String(candle.bodyWidth),
+                height: String(candle.bodyHeight),
+                rx: "1.5",
+                fill: candle.rising ? "rgba(45, 212, 191, 0.88)" : "rgba(251, 113, 133, 0.88)",
+                stroke: candle.color,
+                strokeWidth: "1",
+              }),
+            ]),
+          ),
     ),
   );
 }
@@ -183,74 +218,38 @@ function TradesPanel({ trades, feedMode }) {
     h(
       "div",
       { className: "trade-list" },
-      h(
-        "table",
-        { className: "trade-table" },
-        h(
-          "thead",
-          null,
-          h(
-            "tr",
-            null,
-            h("th", null, "Time"),
-            h("th", null, "Side"),
-            h("th", null, "Price"),
-            h("th", null, "Amount"),
-          ),
-        ),
-        h(
-          "tbody",
-          null,
-          rows.map((trade) =>
+      rows.length === 0
+        ? h("div", { className: "trade-empty" }, "최근 체결 데이터를 불러오는 중입니다.")
+        : h(
+            "table",
+            { className: "trade-table" },
             h(
-              "tr",
-              { key: trade.id },
-              h("td", null, trade.time),
-              h("td", { className: `trade-side ${trade.side === "BUY" ? "trade-buy" : "trade-sell"}` }, trade.side),
-              h("td", null, formatPrice(trade.price)),
-              h("td", null, `${formatAmount(trade.amount)} BTC`),
+              "thead",
+              null,
+              h(
+                "tr",
+                null,
+                h("th", null, "Time"),
+                h("th", null, "Side"),
+                h("th", null, "Price"),
+                h("th", null, "Amount"),
+              ),
+            ),
+            h(
+              "tbody",
+              null,
+              rows.map((trade) =>
+                h(
+                  "tr",
+                  { key: trade.id },
+                  h("td", null, trade.time),
+                  h("td", { className: `trade-side ${trade.side === "BUY" ? "trade-buy" : "trade-sell"}` }, trade.side),
+                  h("td", null, formatPrice(trade.price)),
+                  h("td", null, `${formatAmount(trade.amount)} BTC`),
+                ),
+              ),
             ),
           ),
-        ),
-      ),
-    ),
-  );
-}
-
-/**
- * TickerStrip은 보조 지표를 짧게 요약해서 보여주는 하단 바다.
- */
-function TickerStrip({ market }) {
-  return h(
-    "section",
-    { className: "ticker-strip" },
-    h(
-      "article",
-      { className: "ticker-card" },
-      h("div", { className: "ticker-name" }, "Prev Tick"),
-      h("div", { className: "ticker-value" }, formatPrice(market.previousClose)),
-      h("div", { className: "ticker-change" }, "직전 수신 가격"),
-    ),
-    h(
-      "article",
-      { className: "ticker-card" },
-      h("div", { className: "ticker-name" }, "Session Open"),
-      h("div", { className: "ticker-value" }, formatPrice(market.stats.open)),
-      h("div", { className: "ticker-change" }, "현재 세션 시작 가격"),
-    ),
-    h(
-      "article",
-      { className: "ticker-card" },
-      h("div", { className: "ticker-name" }, "Realtime Volume"),
-      h("div", { className: "ticker-value" }, `${formatAmount(market.stats.volumeBtc)} BTC`),
-      h("div", { className: "ticker-change" }, `${formatCompactNumber(market.stats.volumeUsdt)} USDT`),
-    ),
-    h(
-      "article",
-      { className: "ticker-card" },
-      h("div", { className: "ticker-name" }, "Feed Status"),
-      h("div", { className: `ticker-value ${market.feedMode === "live" ? "positive" : "negative"}` }, market.feedMode === "live" ? "Binance Live" : "Mock Fallback"),
-      h("div", { className: "ticker-change" }, market.connectionLabel),
     ),
   );
 }
@@ -274,6 +273,10 @@ export function App() {
   // 최초 렌더 후 Binance WebSocket 연결 또는 mock fallback 타이머를 설정한다.
   useEffect(() => {
     let mockTimer = null;
+    let disconnect = () => {};
+    let disposed = false;
+    let isBackfillReady = false;
+    let bufferedPayloads = [];
 
     /**
      * mock 피드 interval을 안전하게 정리한다.
@@ -306,41 +309,122 @@ export function App() {
      * 실행 순서 5-2:
      * Binance 피드에 연결하고, 상태 변화/실패/실시간 이벤트를 루트 state에 반영한다.
      */
-    const disconnect = connectBinanceFeed({
-      symbol: "btcusdt",
-      onStatusChange: (status) => {
-        const labels = {
-          connected: "Binance socket connected",
-          connecting: "Connecting to Binance Futures",
-          live: "Binance Futures live feed",
-          reconnecting: "Reconnecting to Binance Futures",
-        };
+    const openLiveFeed = () => {
+      disconnect = connectBinanceFeed({
+        symbol: "btcusdt",
+        onStatusChange: (status) => {
+          const labels = {
+            connected: "Binance socket connected",
+            connecting: "Connecting to Binance Futures",
+            live: "Binance Futures live feed",
+            reconnecting: "Reconnecting to Binance Futures",
+          };
 
-        setMarket((previousState) => setMarketConnection(previousState, status, labels[status] || "Binance feed status updated"));
-      },
-      onFallback: (reason) => {
-        startMockFeed(reason);
-      },
-      onEvent: (payload) => {
-        stopMockFeed();
+          setMarket((previousState) => setMarketConnection(previousState, status, labels[status] || "Binance feed status updated"));
+        },
+        onFallback: (reason) => {
+          startMockFeed(reason);
+        },
+        onEvent: (payload) => {
+          stopMockFeed();
 
-        // 실행 순서 6:
-        // JSON payload를 받고, 어떤 이벤트인지에 따라 다음 state를 계산한다.
-        setMarket((previousState) => {
-          if (payload.e === "markPriceUpdate") {
-            return applyLivePriceUpdate(previousState, payload);
+          if (!isBackfillReady) {
+            bufferedPayloads.push(payload);
+            return;
           }
 
-          if (payload.e === "aggTrade") {
-            return applyLiveTradeUpdate(previousState, payload);
-          }
+          // 실행 순서 6:
+          // JSON payload를 받고, 어떤 이벤트인지에 따라 다음 state를 계산한다.
+          setMarket((previousState) => {
+            if (payload.e === "markPriceUpdate") {
+              return applyLivePriceUpdate(previousState, payload);
+            }
 
-          return previousState;
-        });
-      },
-    });
+            if (payload.e === "aggTrade") {
+              return applyLiveTradeUpdate(previousState, payload);
+            }
+
+            return previousState;
+          });
+        },
+      });
+    };
+
+    const bootstrapLiveFeed = async () => {
+      const requestStartedAt = Date.now();
+      setMarket((previousState) => setMarketConnection(previousState, "connecting", "Loading recent Binance trades"));
+      openLiveFeed();
+
+      try {
+        const trades = await fetchRecentAggTrades("btcusdt", requestStartedAt);
+
+        if (disposed) {
+          return;
+        }
+
+        if (trades.length > 0) {
+          setMarket((previousState) => {
+            let nextState = buildMarketStateFromAggTrades(previousState, trades, Date.now());
+
+            bufferedPayloads.forEach((payload) => {
+              if (payload.e === "markPriceUpdate") {
+                nextState = applyLivePriceUpdate(nextState, payload);
+              }
+
+              if (payload.e === "aggTrade") {
+                nextState = applyLiveTradeUpdate(nextState, payload);
+              }
+            });
+
+            return nextState;
+          });
+        } else if (bufferedPayloads.length > 0) {
+          setMarket((previousState) => {
+            let nextState = previousState;
+
+            bufferedPayloads.forEach((payload) => {
+              if (payload.e === "markPriceUpdate") {
+                nextState = applyLivePriceUpdate(nextState, payload);
+              }
+
+              if (payload.e === "aggTrade") {
+                nextState = applyLiveTradeUpdate(nextState, payload);
+              }
+            });
+
+            return nextState;
+          });
+        }
+      } catch (error) {
+        console.error("Failed to backfill recent Binance trades", error);
+
+        if (!disposed && bufferedPayloads.length > 0) {
+          setMarket((previousState) => {
+            let nextState = previousState;
+
+            bufferedPayloads.forEach((payload) => {
+              if (payload.e === "markPriceUpdate") {
+                nextState = applyLivePriceUpdate(nextState, payload);
+              }
+
+              if (payload.e === "aggTrade") {
+                nextState = applyLiveTradeUpdate(nextState, payload);
+              }
+            });
+
+            return nextState;
+          });
+        }
+      }
+
+      bufferedPayloads = [];
+      isBackfillReady = true;
+    };
+
+    bootstrapLiveFeed();
 
     return () => {
+      disposed = true;
       stopMockFeed();
       disconnect();
     };
@@ -371,7 +455,6 @@ export function App() {
         h(TradesPanel, { trades: market.trades, feedMode: market.feedMode }),
       ),
     ),
-    h(TickerStrip, { market }),
     h("div", { className: "footer-note" }, `Built with our custom FunctionComponent runtime. No react, no react-dom. Source: ${market.connectionLabel}.`),
   );
 }

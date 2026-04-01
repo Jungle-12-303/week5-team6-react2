@@ -17,6 +17,38 @@ function round(value, digits = 1) {
 }
 
 /**
+ * 축 눈금 간격을 사람이 읽기 쉬운 값으로 보정한다.
+ *
+ * 예:
+ * - 0.73  -> 1
+ * - 2.18  -> 2
+ * - 4.92  -> 5
+ * - 13.4  -> 10
+ */
+function getNiceStep(value) {
+  if (!Number.isFinite(value) || value <= 0) {
+    return 1;
+  }
+
+  const exponent = Math.floor(Math.log10(value));
+  const fraction = value / 10 ** exponent;
+
+  if (fraction <= 1.5) {
+    return 10 ** exponent;
+  }
+
+  if (fraction <= 3) {
+    return 2 * 10 ** exponent;
+  }
+
+  if (fraction <= 7) {
+    return 5 * 10 ** exponent;
+  }
+
+  return 10 ** (exponent + 1);
+}
+
+/**
  * 차트 계산에 쓰는 "가격 시계열 한 점"을 만든다.
  *
  * close price를 뽑아서 단순 시계열로 다룰 때 사용한다.
@@ -261,6 +293,72 @@ function bootstrapLiveState(previousState, price, timestamp, amount = 0, trade =
     feedMode: "live",
     connectionStatus: "live",
     connectionLabel: "Binance Futures live feed",
+    isHydrating: false,
+  };
+}
+
+/**
+ * REST로 받아온 최근 aggTrade 목록을 초기 live market state로 변환한다.
+ *
+ * 왜 필요한가?
+ * - 새로고침 직후 현재가 기준 평평한 baseline 대신
+ *   "지금 시점 이전의 실제 거래 흐름"을 먼저 보여주기 위해서다.
+ * - REST backfill 이후에는 WebSocket live 이벤트가 그대로 이어 붙는다.
+ */
+export function buildMarketStateFromAggTrades(previousState, trades, now = Date.now()) {
+  if (!Array.isArray(trades) || trades.length === 0) {
+    return previousState;
+  }
+
+  const sortedTrades = [...trades]
+    .map((trade) => ({
+      id: String(trade.a ?? trade.id ?? `${trade.T ?? trade.E ?? now}-${trade.p}`),
+      price: normalizePrice(trade.p, previousState.price),
+      amount: Number(trade.q) || 0,
+      timestamp: Number(trade.T) || Number(trade.E) || now,
+      side: trade.m ? "SELL" : "BUY",
+    }))
+    .sort((left, right) => left.timestamp - right.timestamp);
+
+  const firstTrade = sortedTrades[0];
+  const lastTrade = sortedTrades.at(-1);
+  const anchorTimestamp = Math.max(now, lastTrade.timestamp);
+  let candles = buildFlatSeedCandles(firstTrade.price, anchorTimestamp);
+  let recentTrades = [];
+  let volumeBtc = 0;
+  let volumeUsdt = 0;
+
+  sortedTrades.forEach((trade) => {
+    candles = pushCandle(candles, trade.price, trade.timestamp, trade.amount);
+    volumeBtc += trade.amount;
+    volumeUsdt += trade.amount * trade.price;
+    recentTrades = upsertTrade(
+      recentTrades,
+      createTrade(trade.id, trade.price, trade.side, trade.timestamp, trade.amount),
+    );
+  });
+
+  const series = candlesToSeries(candles);
+  const previousClose = sortedTrades.length > 1 ? sortedTrades[sortedTrades.length - 2].price : firstTrade.price;
+  const price = lastTrade.price;
+  const change = round(price - previousClose, 1);
+  const changePercent = previousClose === 0 ? 0 : round((change / previousClose) * 100, 2);
+
+  return {
+    ...previousState,
+    price,
+    previousClose,
+    change,
+    changePercent,
+    lastUpdated: lastTrade.timestamp,
+    candles,
+    series,
+    trades: recentTrades,
+    stats: computeSessionStats(series, volumeBtc, volumeUsdt),
+    feedMode: "live",
+    connectionStatus: "live",
+    connectionLabel: "Binance Futures live feed",
+    isHydrating: false,
   };
 }
 
@@ -272,27 +370,29 @@ function bootstrapLiveState(previousState, price, timestamp, amount = 0, trade =
  */
 export function createInitialMarketState() {
   const now = Date.now();
-  const candles = buildSeedCandles(BASE_PRICE, now);
-  const series = candlesToSeries(candles);
-  const price = candles.at(-1).close;
-  const previousClose = candles.at(-2).close;
-  const change = round(price - previousClose, 1);
-  const changePercent = round((change / previousClose) * 100, 2);
 
   return {
     symbol: "BTCUSDT",
-    price,
-    previousClose,
-    change,
-    changePercent,
+    price: null,
+    previousClose: null,
+    change: 0,
+    changePercent: 0,
     lastUpdated: now,
-    candles,
-    series,
-    trades: buildTrades(series),
-    stats: computeStats(series, price),
-    feedMode: "mock",
-    connectionStatus: "mock",
-    connectionLabel: "Mock market feed",
+    candles: [],
+    series: [],
+    trades: [],
+    stats: {
+      high: null,
+      low: null,
+      open: null,
+      volumeBtc: 0,
+      volumeUsdt: 0,
+      openInterest: 0,
+    },
+    feedMode: "loading",
+    connectionStatus: "connecting",
+    connectionLabel: "Loading recent Binance trades",
+    isHydrating: true,
   };
 }
 
@@ -303,6 +403,33 @@ export function createInitialMarketState() {
  * live 피드가 없을 때 setInterval에서 호출된다.
  */
 export function advanceMarketState(previousState) {
+  if (!previousState.candles.length || !Number.isFinite(previousState.price)) {
+    const now = Date.now();
+    const candles = buildSeedCandles(BASE_PRICE, now);
+    const series = candlesToSeries(candles);
+    const price = candles.at(-1).close;
+    const previousClose = candles.at(-2).close;
+    const change = round(price - previousClose, 1);
+    const changePercent = round((change / previousClose) * 100, 2);
+
+    return {
+      ...previousState,
+      price,
+      previousClose,
+      change,
+      changePercent,
+      lastUpdated: now,
+      candles,
+      series,
+      trades: buildTrades(series),
+      stats: computeStats(series, price),
+      feedMode: "mock",
+      connectionStatus: "mock",
+      connectionLabel: "Mock market feed",
+      isHydrating: false,
+    };
+  }
+
   const now = previousState.lastUpdated + 1000;
   const directionBias = Math.sin(now / 4400) * 12;
   const variance = Math.cos(now / 1700) * 6;
@@ -334,6 +461,7 @@ export function advanceMarketState(previousState) {
     feedMode: "mock",
     connectionStatus: "mock",
     connectionLabel: "Mock market feed",
+    isHydrating: false,
   };
 }
 
@@ -343,8 +471,10 @@ export function advanceMarketState(previousState) {
 export function setMarketConnection(previousState, status, label) {
   return {
     ...previousState,
+    feedMode: status === "mock" ? "mock" : previousState.feedMode,
     connectionStatus: status,
     connectionLabel: label,
+    isHydrating: status === "mock" ? false : previousState.isHydrating,
   };
 }
 
@@ -378,6 +508,7 @@ export function applyLivePriceUpdate(previousState, payload) {
     feedMode: "live",
     connectionStatus: "live",
     connectionLabel: "Binance Futures live feed",
+    isHydrating: false,
   };
 }
 
@@ -420,6 +551,7 @@ export function applyLiveTradeUpdate(previousState, payload) {
     feedMode: "live",
     connectionStatus: "live",
     connectionLabel: "Binance Futures live feed",
+    isHydrating: false,
   };
 }
 
@@ -430,14 +562,40 @@ export function applyLiveTradeUpdate(previousState, payload) {
  * App의 useMemo 안에서 호출되어 "그릴 준비가 끝난 차트 데이터"를 만든다.
  */
 export function buildChartMeta(candles, width, height) {
+  if (!candles.length) {
+    return {
+      min: 0,
+      max: 0,
+      axisStep: 1,
+      axisWidth: 58,
+      plotWidth: round(width - 58, 2),
+      plotHeight: round(height - 28, 2),
+      candleWidth: 0,
+      axisTicks: [],
+      candles: [],
+    };
+  }
+
+  const axisWidth = 58;
+  const topPadding = 14;
+  const bottomPadding = 14;
+  const plotWidth = Math.max(width - axisWidth, 1);
+  const plotHeight = Math.max(height - topPadding - bottomPadding, 1);
   const lows = candles.map((candle) => candle.low);
   const highs = candles.map((candle) => candle.high);
-  const min = Math.min(...lows);
-  const max = Math.max(...highs);
-  const spread = Math.max(max - min, 1);
-  const step = width / Math.max(candles.length, 1);
+  const dataMin = Math.min(...lows);
+  const dataMax = Math.max(...highs);
+  const dataSpread = Math.max(dataMax - dataMin, 1);
+  const paddedMin = dataMin - dataSpread * 0.08;
+  const paddedMax = dataMax + dataSpread * 0.08;
+  const axisTickCount = 5;
+  const niceStep = getNiceStep((paddedMax - paddedMin) / Math.max(axisTickCount - 1, 1));
+  const min = Math.floor(paddedMin / niceStep) * niceStep;
+  const max = Math.ceil(paddedMax / niceStep) * niceStep;
+  const spread = Math.max(max - min, niceStep);
+  const step = plotWidth / Math.max(candles.length, 1);
   const candleWidth = Math.max(step * 0.62, 2);
-  const toY = (price) => round(height - ((price - min) / spread) * height, 2);
+  const toY = (price) => round(topPadding + plotHeight - ((price - min) / spread) * plotHeight, 2);
   const candleShapes = candles.map((candle, index) => {
     const centerX = round(index * step + step / 2, 2);
     const openY = toY(candle.open);
@@ -464,12 +622,42 @@ export function buildChartMeta(candles, width, height) {
     };
   });
 
+  const axisTicks = Array.from({ length: axisTickCount }, (_, index) => {
+    const value = round(max - niceStep * index, 1);
+
+    return {
+      key: `axis-${index}`,
+      value,
+      y: toY(value),
+    };
+  });
+
   return {
     min,
     max,
+    axisStep: niceStep,
+    axisWidth,
+    plotWidth: round(plotWidth, 2),
+    plotHeight: round(plotHeight, 2),
     candleWidth: round(candleWidth, 2),
+    axisTicks,
     candles: candleShapes,
   };
+}
+
+/**
+ * 오른쪽 세로축에 표시할 눈금 라벨 포맷이다.
+ *
+ * "정확한 체결가"가 아니라 "읽기 쉬운 눈금"을 보여주는 목적이므로
+ * step이 1 이상이면 정수 단위로, 그보다 작으면 소수 한 자리까지 표시한다.
+ */
+export function formatAxisTick(value, step) {
+  const digits = step >= 1 ? 0 : 1;
+
+  return value.toLocaleString("en-US", {
+    minimumFractionDigits: digits,
+    maximumFractionDigits: digits,
+  });
 }
 
 /**

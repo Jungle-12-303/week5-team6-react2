@@ -4,6 +4,12 @@ const RECONNECT_DELAY_MS = 2000;
 // 일정 시간 안에 데이터가 전혀 안 오면 live 피드가 죽었다고 판단하는 기준 시간이다.
 const STALE_TIMEOUT_MS = 6000;
 
+// 차트 시작 시 최근 몇 초의 거래를 REST로 미리 불러올지 결정한다.
+const BACKFILL_WINDOW_MS = 120 * 1000;
+
+// Binance Futures 공개 REST endpoint다.
+const REST_BASE_URL = "https://fapi.binance.com";
+
 /**
  * 심볼명을 Binance Futures combined stream URL로 변환한다.
  *
@@ -15,6 +21,34 @@ const STALE_TIMEOUT_MS = 6000;
 function buildStreamUrl(symbol) {
   const lowerSymbol = symbol.toLowerCase();
   return `wss://fstream.binance.com/stream?streams=${lowerSymbol}@markPrice@1s/${lowerSymbol}@aggTrade`;
+}
+
+/**
+ * 최근 aggTrade를 REST로 가져온다.
+ *
+ * 목적:
+ * - 페이지 진입 직후 과거 120초 정도의 실제 거래 흐름을 먼저 그리기
+ * - 그 뒤 WebSocket live 이벤트를 이어 붙이기
+ */
+export async function fetchRecentAggTrades(symbol = "btcusdt", now = Date.now()) {
+  if (typeof fetch === "undefined") {
+    throw new Error("Fetch API is not available in this environment.");
+  }
+
+  const url = new URL("/fapi/v1/aggTrades", REST_BASE_URL);
+  url.searchParams.set("symbol", symbol.toUpperCase());
+  url.searchParams.set("startTime", String(now - BACKFILL_WINDOW_MS));
+  url.searchParams.set("endTime", String(now));
+  url.searchParams.set("limit", "1000");
+
+  const response = await fetch(url);
+
+  if (!response.ok) {
+    throw new Error(`Failed to fetch aggTrades: ${response.status}`);
+  }
+
+  const trades = await response.json();
+  return Array.isArray(trades) ? trades : [];
 }
 
 /**
