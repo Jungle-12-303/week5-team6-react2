@@ -13,6 +13,7 @@ React의 핵심 기능을 처음부터 구현하는 프로젝트입니다.
 | 5 | Hooks | [05-hooks.md](./05-hooks.md) |
 | 6 | 렌더 단계 & 커밋 단계 | [06-render-commit-phase.md](./06-render-commit-phase.md) |
 | 7 | 현재 코드 실행 순서 | [execution-order-guide.md](./execution-order-guide.md) |
+| 8 | 발표 예상 질문 | [presentation-qa.md](./presentation-qa.md) |
 
 ## 구현 순서
 

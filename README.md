@@ -44,6 +44,14 @@ React의 핵심 개념을 참고하되, 기존 `react`, `react-dom` 패키지를
 - `useMemo`는 deps가 바뀔 때만 다시 계산합니다.
   현재 프로젝트에서는 차트를 그리기 위한 range, 좌표, 이동평균선 같은 파생 데이터를 계산할 때 사용합니다.
 
+`useMemo`와 `ChartPanel`의 역할을 아주 쉽게 나누면,  
+`useMemo`는 **차트를 그리기 위한 좌표 설명서(chartMeta)를 만드는 계산 담당**이고, `ChartPanel`은 **그 설명서를 보고 실제 SVG를 그리는 렌더 담당**입니다.
+
+- `useMemo`는 `buildChartMeta()`를 통해 candle 데이터로부터 x 위치, y 위치, 축 눈금 위치, 이동평균선 점 위치를 계산합니다.
+- 이렇게 만들어진 `chartMeta`는 루트 `App`에서 한 번 만들어져 props로 내려갑니다.
+- `ChartPanel`은 `chartMeta.candles`를 보고 `line`, `rect`로 캔들을 그리고, `chartMeta.axisTicks`를 보고 오른쪽 세로축과 가로 보조선을 그리고, `chartMeta.movingAverage`를 보고 `polyline`으로 이동평균선을 그립니다.
+- 즉 원본 candle 데이터는 바로 화면에 그려지지 않고, 먼저 “어디에 그릴지 계산된 값”으로 바뀐 뒤 SVG 요소로 렌더링됩니다.
+
 정리하면, 우리 팀 구현의 핵심은  
 **queue 기반 state 처리 → 마이크로태스크 단위 렌더 예약 → hook 기반 실행 관리 → effect 후처리**  
 흐름으로 볼 수 있습니다.
