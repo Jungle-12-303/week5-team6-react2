@@ -24,6 +24,11 @@ function createTrade(id, price, side, timestamp, amount) {
   };
 }
 
+function normalizePrice(value, fallback = BASE_PRICE) {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? round(parsed, 1) : fallback;
+}
+
 function buildSeries(basePrice, now) {
   const series = [];
   let price = basePrice - 86;
@@ -67,6 +72,38 @@ function computeStats(series, price) {
   };
 }
 
+function computeSessionStats(series, volumeBtc, volumeUsdt) {
+  const prices = series.map((entry) => entry.price);
+
+  return {
+    high: round(Math.max(...prices), 1),
+    low: round(Math.min(...prices), 1),
+    open: round(series[0].price, 1),
+    volumeBtc: round(volumeBtc, 3),
+    volumeUsdt: round(volumeUsdt, 0),
+  };
+}
+
+function pushSeriesPoint(series, price, timestamp) {
+  const normalized = createSeriesPoint(price, timestamp);
+  const previousPoint = series.at(-1);
+
+  if (previousPoint && Math.floor(previousPoint.timestamp / 1000) === Math.floor(timestamp / 1000)) {
+    return [...series.slice(0, -1), normalized];
+  }
+
+  return [...series.slice(-(SERIES_LENGTH - 1)), normalized];
+}
+
+function upsertTrade(trades, trade) {
+  const existingIndex = trades.findIndex((entry) => entry.id === trade.id);
+  const nextTrades = existingIndex >= 0
+    ? trades.map((entry, index) => (index === existingIndex ? trade : entry))
+    : [...trades, trade];
+
+  return nextTrades.slice(-TRADE_HISTORY_LENGTH);
+}
+
 export function createInitialMarketState() {
   const now = Date.now();
   const series = buildSeries(BASE_PRICE, now);
@@ -85,6 +122,9 @@ export function createInitialMarketState() {
     series,
     trades: buildTrades(series),
     stats: computeStats(series, price),
+    feedMode: "mock",
+    connectionStatus: "mock",
+    connectionLabel: "Mock market feed",
   };
 }
 
@@ -115,6 +155,59 @@ export function advanceMarketState(previousState) {
     series,
     trades,
     stats: computeStats(series, price),
+    feedMode: "mock",
+    connectionStatus: "mock",
+    connectionLabel: "Mock market feed",
+  };
+}
+
+export function setMarketConnection(previousState, status, label) {
+  return {
+    ...previousState,
+    connectionStatus: status,
+    connectionLabel: label,
+  };
+}
+
+export function applyLivePriceUpdate(previousState, payload) {
+  const timestamp = Number(payload.E) || Date.now();
+  const price = normalizePrice(payload.p, previousState.price);
+  const previousClose = previousState.price;
+  const change = round(price - previousClose, 1);
+  const changePercent = previousClose === 0 ? 0 : round((change / previousClose) * 100, 2);
+  const series = pushSeriesPoint(previousState.series, price, timestamp);
+  const stats = computeSessionStats(series, previousState.stats.volumeBtc, previousState.stats.volumeUsdt);
+
+  return {
+    ...previousState,
+    price,
+    previousClose,
+    change,
+    changePercent,
+    lastUpdated: timestamp,
+    series,
+    stats,
+    feedMode: "live",
+    connectionStatus: "live",
+    connectionLabel: "Binance Futures live feed",
+  };
+}
+
+export function applyLiveTradeUpdate(previousState, payload) {
+  const timestamp = Number(payload.T) || Number(payload.E) || Date.now();
+  const price = normalizePrice(payload.p, previousState.price);
+  const amount = Number(payload.q) || 0;
+  const side = payload.m ? "SELL" : "BUY";
+  const trade = createTrade(String(payload.a ?? timestamp), price, side, timestamp, amount);
+  const volumeBtc = previousState.stats.volumeBtc + amount;
+  const volumeUsdt = previousState.stats.volumeUsdt + amount * price;
+  const stats = computeSessionStats(previousState.series, volumeBtc, volumeUsdt);
+
+  return {
+    ...previousState,
+    trades: upsertTrade(previousState.trades, trade),
+    stats,
+    feedMode: previousState.feedMode === "live" ? "live" : previousState.feedMode,
   };
 }
 
@@ -169,4 +262,11 @@ export function formatClock(timestamp) {
     second: "2-digit",
     hour12: false,
   }).format(timestamp);
+}
+
+export function formatAmount(value) {
+  return value.toLocaleString("en-US", {
+    minimumFractionDigits: 3,
+    maximumFractionDigits: 3,
+  });
 }
