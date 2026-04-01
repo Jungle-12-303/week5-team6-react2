@@ -4,6 +4,7 @@ import {
   applyLivePriceUpdate,
   applyLiveTradeUpdate,
   applyLiveKlineUpdate,
+  apply24hrTickerStats,
   buildChartMeta,
   buildChartStateFromKlines,
   buildMarketStateFromAggTrades,
@@ -22,6 +23,7 @@ import {
 import {
   connectBinanceFeed,
   connectBinanceKlineFeed,
+  fetch24hrTicker,
   fetchRecentAggTrades,
   fetchRecentKlines,
 } from "./binance-feed.js";
@@ -58,9 +60,11 @@ function Header({ market }) {
  */
 function PricePanel({ market, selectedInterval, chartState, appliedMovingAveragePeriod, chartMeta }) {
   const isLoading = market.isHydrating;
-  const trendClass = market.change >= 0 ? "positive" : "negative";
+  const dailyChange = Number.isFinite(market.dailyChange) ? market.dailyChange : market.change;
+  const dailyChangePercent = Number.isFinite(market.dailyChangePercent) ? market.dailyChangePercent : market.changePercent;
+  const trendClass = dailyChange >= 0 ? "positive" : "negative";
   const priceText = isLoading || market.price === null ? "Loading..." : formatPrice(market.price);
-  const changeText = isLoading ? "" : formatSignedPercent(market.changePercent);
+  const changeText = isLoading ? "" : formatSignedPercent(dailyChangePercent);
   const noteText = isLoading ? "최근 Binance 거래를 불러오는 중입니다." : `Tick delta ${formatSignedPrice(market.change)} · Updated ${formatClock(market.lastUpdated)}`;
   const latestTrade = market.trades[market.trades.length - 1] ?? null;
   const latestCandle = chartState.candles[chartState.candles.length - 1] ?? null;
@@ -188,6 +192,7 @@ function ChartPanel({
   chartMeta,
 }) {
   const isLoading = chartState.isLoading && chartState.candles.length === 0;
+  const hasChartError = Boolean(chartState.error) && !chartState.historyReady;
   const isValidMovingAverageInput = /^\d+$/.test(movingAverageInput) && Number(movingAverageInput) >= 5 && Number(movingAverageInput) <= 20;
 
   return h(
@@ -248,7 +253,15 @@ function ChartPanel({
     h(
       "div",
       { className: "chart-frame" },
-      isLoading
+      hasChartError
+        ? h(
+            "div",
+            { className: "chart-loading chart-error" },
+            h("div", { className: "chart-loading-title" }, "Chart backfill failed"),
+            h("div", { className: "chart-loading-copy" }, chartState.error),
+            h("div", { className: "chart-loading-copy" }, "충분한 과거 kline 데이터를 확보할 때까지 차트를 그리지 않습니다."),
+          )
+        : isLoading
         ? h(
             "div",
             { className: "chart-loading" },
@@ -433,8 +446,10 @@ export function App() {
   useEffect(() => {
     let mockTimer = null;
     let disconnect = () => {};
+    let ticker24hTimer = null;
     let disposed = false;
     let isBackfillReady = false;
+    let backfillFailed = false;
     let bufferedPayloads = [];
 
     /**
@@ -464,6 +479,27 @@ export function App() {
       }, 1000);
     };
 
+    const stop24hrTickerPolling = () => {
+      if (ticker24hTimer) {
+        window.clearInterval(ticker24hTimer);
+        ticker24hTimer = null;
+      }
+    };
+
+    const sync24hrTicker = async () => {
+      try {
+        const ticker = await fetch24hrTicker("btcusdt");
+
+        if (disposed) {
+          return;
+        }
+
+        setMarket((previousState) => apply24hrTickerStats(previousState, ticker));
+      } catch (error) {
+        console.error("Failed to fetch Binance 24hr ticker", error);
+      }
+    };
+
     /**
      * 실행 순서 5-2:
      * Binance 피드에 연결하고, 상태 변화/실패/실시간 이벤트를 루트 state에 반영한다.
@@ -488,6 +524,10 @@ export function App() {
           stopMockFeed();
 
           if (!isBackfillReady) {
+            if (backfillFailed) {
+              return;
+            }
+
             bufferedPayloads.push(payload);
             return;
           }
@@ -511,8 +551,13 @@ export function App() {
 
     const bootstrapLiveFeed = async () => {
       const requestStartedAt = Date.now();
+      let backfillSucceeded = false;
       setMarket((previousState) => setMarketConnection(previousState, "connecting", "Loading recent Binance trades"));
       openLiveFeed();
+      sync24hrTicker();
+      ticker24hTimer = window.setInterval(() => {
+        sync24hrTicker();
+      }, 30 * 1000);
 
       try {
         const trades = await fetchRecentAggTrades("btcusdt", requestStartedAt);
@@ -537,47 +582,38 @@ export function App() {
 
             return nextState;
           });
-        } else if (bufferedPayloads.length > 0) {
-          setMarket((previousState) => {
-            let nextState = previousState;
-
-            bufferedPayloads.forEach((payload) => {
-              if (payload.e === "markPriceUpdate") {
-                nextState = applyLivePriceUpdate(nextState, payload);
-              }
-
-              if (payload.e === "aggTrade") {
-                nextState = applyLiveTradeUpdate(nextState, payload);
-              }
-            });
-
-            return nextState;
-          });
+          backfillSucceeded = true;
+        } else {
+          backfillFailed = true;
+          setMarket((previousState) => ({
+            ...previousState,
+            feedMode: "live",
+            connectionStatus: "error",
+            connectionLabel: "Failed to load recent Binance 1s history",
+            isHydrating: false,
+            error: "Could not load recent 1s trade history from Binance.",
+            historyReady: false,
+          }));
         }
       } catch (error) {
         console.error("Failed to backfill recent Binance trades", error);
 
-        if (!disposed && bufferedPayloads.length > 0) {
-          setMarket((previousState) => {
-            let nextState = previousState;
-
-            bufferedPayloads.forEach((payload) => {
-              if (payload.e === "markPriceUpdate") {
-                nextState = applyLivePriceUpdate(nextState, payload);
-              }
-
-              if (payload.e === "aggTrade") {
-                nextState = applyLiveTradeUpdate(nextState, payload);
-              }
-            });
-
-            return nextState;
-          });
+        if (!disposed) {
+          backfillFailed = true;
+          setMarket((previousState) => ({
+            ...previousState,
+            feedMode: "live",
+            connectionStatus: "error",
+            connectionLabel: "Failed to load recent Binance 1s history",
+            isHydrating: false,
+            error: "Could not load recent 1s trade history from Binance.",
+            historyReady: false,
+          }));
         }
       }
 
       bufferedPayloads = [];
-      isBackfillReady = true;
+      isBackfillReady = backfillSucceeded;
     };
 
     bootstrapLiveFeed();
@@ -585,6 +621,7 @@ export function App() {
     return () => {
       disposed = true;
       stopMockFeed();
+      stop24hrTickerPolling();
       disconnect();
     };
   }, []);
@@ -600,6 +637,8 @@ export function App() {
         connectionStatus: market.connectionStatus,
         connectionLabel: market.connectionLabel,
         isLoading: market.isHydrating && market.candles.length === 0,
+        error: market.error,
+        historyReady: market.historyReady,
       }));
 
       return () => {};
@@ -617,6 +656,8 @@ export function App() {
       connectionStatus: "connecting",
       connectionLabel: `Loading Binance ${getChartIntervalLabel(selectedInterval)} kline data`,
       isLoading: true,
+      error: null,
+      historyReady: false,
     }));
 
     const openKlineFeed = () => {
@@ -672,21 +713,18 @@ export function App() {
       } catch (error) {
         console.error("Failed to fetch recent Binance klines", error);
 
-        if (!disposed && bufferedKlines.length > 0) {
+        if (!disposed) {
           setChartState((previousState) => {
-            let nextState = {
+            const nextState = {
               ...previousState,
               interval: selectedInterval,
               candles: [],
-              connectionStatus: "live",
-              connectionLabel: `Binance ${getChartIntervalLabel(selectedInterval)} kline live`,
+              connectionStatus: "error",
+              connectionLabel: `Failed to load Binance ${getChartIntervalLabel(selectedInterval)} history`,
               isLoading: false,
+              error: `Could not load recent ${getChartIntervalLabel(selectedInterval)} candles from Binance.`,
+              historyReady: false,
             };
-
-            bufferedKlines.forEach((payload) => {
-              nextState = applyLiveKlineUpdate(nextState, payload, selectedInterval);
-            });
-
             return nextState;
           });
         }
@@ -723,8 +761,10 @@ export function App() {
       connectionStatus: market.connectionStatus,
       connectionLabel: market.connectionLabel,
       isLoading: market.isHydrating && market.candles.length === 0,
+      error: market.error,
+      historyReady: market.historyReady,
     }));
-  }, [selectedInterval, market.candles, market.connectionStatus, market.connectionLabel, market.isHydrating]);
+  }, [selectedInterval, market.candles, market.connectionStatus, market.connectionLabel, market.isHydrating, market.error, market.historyReady]);
 
   // 실행 순서 4:
   // 최신 state를 바탕으로 루트 VNode 트리를 만든다.

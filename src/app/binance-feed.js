@@ -9,9 +9,21 @@ const BACKFILL_WINDOW_MS = 120 * 1000;
 
 // aggTrade REST는 한 번에 최대 1000개만 주므로, backfill 구간을 작은 창으로 나눠서 가져온다.
 const AGG_TRADE_SLICE_MS = 15 * 1000;
+const AGG_TRADE_FETCH_RETRY_COUNT = 4;
+const AGG_TRADE_FETCH_RETRY_DELAY_MS = 1200;
+const KLINE_FETCH_RETRY_COUNT = 4;
+const KLINE_FETCH_RETRY_DELAY_MS = 1200;
+const TICKER_24HR_FETCH_RETRY_COUNT = 4;
+const TICKER_24HR_FETCH_RETRY_DELAY_MS = 1200;
 
 // Binance Futures 공개 REST endpoint다.
 const REST_BASE_URL = "https://fapi.binance.com";
+
+function wait(milliseconds) {
+  return new Promise((resolve) => {
+    window.setTimeout(resolve, milliseconds);
+  });
+}
 
 /**
  * 심볼명을 Binance Futures combined stream URL로 변환한다.
@@ -54,32 +66,54 @@ export async function fetchRecentAggTrades(symbol = "btcusdt", now = Date.now())
     ranges.push([sliceStart, sliceEnd]);
   }
 
-  const responses = await Promise.all(
-    ranges.map(async ([startTime, endTime]) => {
-      const url = new URL("/fapi/v1/aggTrades", REST_BASE_URL);
-      url.searchParams.set("symbol", symbolName);
-      url.searchParams.set("startTime", String(startTime));
-      url.searchParams.set("endTime", String(endTime));
-      url.searchParams.set("limit", "1000");
+  let lastError = null;
 
-      const response = await fetch(url);
+  for (let attempt = 0; attempt < AGG_TRADE_FETCH_RETRY_COUNT; attempt += 1) {
+    try {
+      const responses = await Promise.all(
+        ranges.map(async ([startTime, endTime]) => {
+          const url = new URL("/fapi/v1/aggTrades", REST_BASE_URL);
+          url.searchParams.set("symbol", symbolName);
+          url.searchParams.set("startTime", String(startTime));
+          url.searchParams.set("endTime", String(endTime));
+          url.searchParams.set("limit", "1000");
 
-      if (!response.ok) {
-        throw new Error(`Failed to fetch aggTrades: ${response.status}`);
+          const response = await fetch(url, {
+            cache: "no-store",
+          });
+
+          if (!response.ok) {
+            throw new Error(`Failed to fetch aggTrades: ${response.status}`);
+          }
+
+          const trades = await response.json();
+          return Array.isArray(trades) ? trades : [];
+        }),
+      );
+
+      const dedupedTrades = new Map();
+
+      responses.flat().forEach((trade) => {
+        dedupedTrades.set(String(trade.a), trade);
+      });
+
+      const trades = [...dedupedTrades.values()].sort((left, right) => (Number(left.T) || 0) - (Number(right.T) || 0));
+
+      if (trades.length === 0) {
+        throw new Error("aggTrade response was empty.");
       }
 
-      const trades = await response.json();
-      return Array.isArray(trades) ? trades : [];
-    }),
-  );
+      return trades;
+    } catch (error) {
+      lastError = error;
 
-  const dedupedTrades = new Map();
+      if (attempt < AGG_TRADE_FETCH_RETRY_COUNT - 1) {
+        await wait(AGG_TRADE_FETCH_RETRY_DELAY_MS * (attempt + 1));
+      }
+    }
+  }
 
-  responses.flat().forEach((trade) => {
-    dedupedTrades.set(String(trade.a), trade);
-  });
-
-  return [...dedupedTrades.values()].sort((left, right) => (Number(left.T) || 0) - (Number(right.T) || 0));
+  throw lastError ?? new Error("Failed to fetch aggTrades.");
 }
 
 /**
@@ -92,19 +126,79 @@ export async function fetchRecentKlines(symbol = "btcusdt", interval = "1m", lim
     throw new Error("Fetch API is not available in this environment.");
   }
 
-  const url = new URL("/fapi/v1/klines", REST_BASE_URL);
-  url.searchParams.set("symbol", symbol.toUpperCase());
-  url.searchParams.set("interval", interval);
-  url.searchParams.set("limit", String(limit));
+  let lastError = null;
 
-  const response = await fetch(url);
+  for (let attempt = 0; attempt < KLINE_FETCH_RETRY_COUNT; attempt += 1) {
+    try {
+      const url = new URL("/fapi/v1/klines", REST_BASE_URL);
+      url.searchParams.set("symbol", symbol.toUpperCase());
+      url.searchParams.set("interval", interval);
+      url.searchParams.set("limit", String(limit));
 
-  if (!response.ok) {
-    throw new Error(`Failed to fetch klines: ${response.status}`);
+      const response = await fetch(url, {
+        cache: "no-store",
+      });
+
+      if (!response.ok) {
+        throw new Error(`Failed to fetch klines: ${response.status}`);
+      }
+
+      const klines = await response.json();
+
+      if (!Array.isArray(klines) || klines.length === 0) {
+        throw new Error("Kline response was empty.");
+      }
+
+      return klines;
+    } catch (error) {
+      lastError = error;
+
+      if (attempt < KLINE_FETCH_RETRY_COUNT - 1) {
+        await wait(KLINE_FETCH_RETRY_DELAY_MS * (attempt + 1));
+      }
+    }
   }
 
-  const klines = await response.json();
-  return Array.isArray(klines) ? klines : [];
+  throw lastError ?? new Error("Failed to fetch klines.");
+}
+
+export async function fetch24hrTicker(symbol = "btcusdt") {
+  if (typeof fetch === "undefined") {
+    throw new Error("Fetch API is not available in this environment.");
+  }
+
+  let lastError = null;
+
+  for (let attempt = 0; attempt < TICKER_24HR_FETCH_RETRY_COUNT; attempt += 1) {
+    try {
+      const url = new URL("/fapi/v1/ticker/24hr", REST_BASE_URL);
+      url.searchParams.set("symbol", symbol.toUpperCase());
+
+      const response = await fetch(url, {
+        cache: "no-store",
+      });
+
+      if (!response.ok) {
+        throw new Error(`Failed to fetch 24hr ticker: ${response.status}`);
+      }
+
+      const ticker = await response.json();
+
+      if (!ticker || typeof ticker !== "object") {
+        throw new Error("24hr ticker response was invalid.");
+      }
+
+      return ticker;
+    } catch (error) {
+      lastError = error;
+
+      if (attempt < TICKER_24HR_FETCH_RETRY_COUNT - 1) {
+        await wait(TICKER_24HR_FETCH_RETRY_DELAY_MS * (attempt + 1));
+      }
+    }
+  }
+
+  throw lastError ?? new Error("Failed to fetch 24hr ticker.");
 }
 
 /**

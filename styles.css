@@ -482,6 +482,10 @@ body::before {
   font-size: 13px;
 }
 
+.chart-error .chart-loading-title {
+  color: #fda4af;
+}
+
 .chart-canvas {
   width: 100%;
   height: 320px;

@@ -10,6 +10,7 @@ const TRADE_HISTORY_LENGTH = 8;
 
 // 차트 interval 선택 버튼에서 사용하는 기본 값이다.
 const DEFAULT_CHART_INTERVAL = "1s";
+const MIN_REQUIRED_KLINE_CANDLES = 20;
 
 /**
  * 소수점 자릿수를 통일하기 위한 공용 반올림 함수다.
@@ -227,6 +228,8 @@ export function createInitialChartState() {
     connectionStatus: "connecting",
     connectionLabel: "Loading Binance kline data",
     isLoading: true,
+    error: null,
+    historyReady: false,
   };
 }
 
@@ -441,6 +444,8 @@ export function buildMarketStateFromAggTrades(previousState, trades, now = Date.
     connectionStatus: "live",
     connectionLabel: "Binance Futures live feed",
     isHydrating: false,
+    error: null,
+    historyReady: true,
   };
 }
 
@@ -453,13 +458,16 @@ export function buildChartStateFromKlines(previousState, klines, interval) {
       ...previousState,
       interval,
       candles: [],
-      connectionStatus: "live",
-      connectionLabel: `Binance ${getChartIntervalLabel(interval)} kline feed`,
+      connectionStatus: "error",
+      connectionLabel: `Binance ${getChartIntervalLabel(interval)} kline backfill unavailable`,
       isLoading: false,
+      error: `Failed to load recent ${getChartIntervalLabel(interval)} candles.`,
+      historyReady: false,
     };
   }
 
   const candles = klines.map((entry) => normalizeKlineCandle(entry)).slice(-120);
+  const historyReady = candles.length >= MIN_REQUIRED_KLINE_CANDLES;
 
   return {
     ...previousState,
@@ -468,6 +476,8 @@ export function buildChartStateFromKlines(previousState, klines, interval) {
     connectionStatus: "live",
     connectionLabel: `Binance ${getChartIntervalLabel(interval)} kline feed`,
     isLoading: false,
+    error: historyReady ? null : `Only ${candles.length} ${getChartIntervalLabel(interval)} candles loaded.`,
+    historyReady,
   };
 }
 
@@ -486,6 +496,8 @@ export function applyLiveKlineUpdate(previousState, payload, interval) {
     candles = [...previousState.candles, nextCandle].slice(-120);
   }
 
+  const historyReady = previousState.historyReady || candles.length >= MIN_REQUIRED_KLINE_CANDLES;
+
   return {
     ...previousState,
     interval,
@@ -493,6 +505,8 @@ export function applyLiveKlineUpdate(previousState, payload, interval) {
     connectionStatus: "live",
     connectionLabel: `Binance ${getChartIntervalLabel(interval)} kline feed`,
     isLoading: false,
+    error: historyReady ? null : previousState.error,
+    historyReady,
   };
 }
 
@@ -511,6 +525,8 @@ export function createInitialMarketState() {
     previousClose: null,
     change: 0,
     changePercent: 0,
+    dailyChange: 0,
+    dailyChangePercent: 0,
     lastUpdated: now,
     candles: [],
     series: [],
@@ -527,6 +543,30 @@ export function createInitialMarketState() {
     connectionStatus: "connecting",
     connectionLabel: "Loading recent Binance trades",
     isHydrating: true,
+    error: null,
+    historyReady: false,
+  };
+}
+
+/**
+ * Binance 24시간 ticker 응답을 market state에 반영한다.
+ *
+ * 역할:
+ * - 가격 옆에 보이는 퍼센트는 tick 변화율이 아니라 24시간 변화율을 사용한다.
+ * - 아래 Tick delta는 기존 실시간 체결 기준 변화를 그대로 유지한다.
+ */
+export function apply24hrTickerStats(previousState, ticker) {
+  const dailyChange = Number(ticker?.priceChange);
+  const dailyChangePercent = Number(ticker?.priceChangePercent);
+
+  if (!Number.isFinite(dailyChange) || !Number.isFinite(dailyChangePercent)) {
+    return previousState;
+  }
+
+  return {
+    ...previousState,
+    dailyChange: round(dailyChange, 1),
+    dailyChangePercent: round(dailyChangePercent, 2),
   };
 }
 
@@ -643,6 +683,8 @@ export function applyLivePriceUpdate(previousState, payload) {
     connectionStatus: "live",
     connectionLabel: "Binance Futures live feed",
     isHydrating: false,
+    error: null,
+    historyReady: true,
   };
 }
 
@@ -686,6 +728,8 @@ export function applyLiveTradeUpdate(previousState, payload) {
     connectionStatus: "live",
     connectionLabel: "Binance Futures live feed",
     isHydrating: false,
+    error: null,
+    historyReady: true,
   };
 }
 
