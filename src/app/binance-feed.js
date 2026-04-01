@@ -7,6 +7,9 @@ const STALE_TIMEOUT_MS = 6000;
 // 차트 시작 시 최근 몇 초의 거래를 REST로 미리 불러올지 결정한다.
 const BACKFILL_WINDOW_MS = 120 * 1000;
 
+// aggTrade REST는 한 번에 최대 1000개만 주므로, backfill 구간을 작은 창으로 나눠서 가져온다.
+const AGG_TRADE_SLICE_MS = 15 * 1000;
+
 // Binance Futures 공개 REST endpoint다.
 const REST_BASE_URL = "https://fapi.binance.com";
 
@@ -24,6 +27,14 @@ function buildStreamUrl(symbol) {
 }
 
 /**
+ * 심볼과 interval을 Binance Futures kline stream URL로 변환한다.
+ */
+function buildKlineStreamUrl(symbol, interval) {
+  const lowerSymbol = symbol.toLowerCase();
+  return `wss://fstream.binance.com/ws/${lowerSymbol}@kline_${interval}`;
+}
+
+/**
  * 최근 aggTrade를 REST로 가져온다.
  *
  * 목적:
@@ -35,20 +46,65 @@ export async function fetchRecentAggTrades(symbol = "btcusdt", now = Date.now())
     throw new Error("Fetch API is not available in this environment.");
   }
 
-  const url = new URL("/fapi/v1/aggTrades", REST_BASE_URL);
+  const symbolName = symbol.toUpperCase();
+  const ranges = [];
+
+  for (let sliceEnd = now; sliceEnd > now - BACKFILL_WINDOW_MS; sliceEnd -= AGG_TRADE_SLICE_MS) {
+    const sliceStart = Math.max(now - BACKFILL_WINDOW_MS, sliceEnd - AGG_TRADE_SLICE_MS + 1);
+    ranges.push([sliceStart, sliceEnd]);
+  }
+
+  const responses = await Promise.all(
+    ranges.map(async ([startTime, endTime]) => {
+      const url = new URL("/fapi/v1/aggTrades", REST_BASE_URL);
+      url.searchParams.set("symbol", symbolName);
+      url.searchParams.set("startTime", String(startTime));
+      url.searchParams.set("endTime", String(endTime));
+      url.searchParams.set("limit", "1000");
+
+      const response = await fetch(url);
+
+      if (!response.ok) {
+        throw new Error(`Failed to fetch aggTrades: ${response.status}`);
+      }
+
+      const trades = await response.json();
+      return Array.isArray(trades) ? trades : [];
+    }),
+  );
+
+  const dedupedTrades = new Map();
+
+  responses.flat().forEach((trade) => {
+    dedupedTrades.set(String(trade.a), trade);
+  });
+
+  return [...dedupedTrades.values()].sort((left, right) => (Number(left.T) || 0) - (Number(right.T) || 0));
+}
+
+/**
+ * 최근 kline 데이터를 REST로 가져온다.
+ *
+ * 차트 interval 선택 시 1분봉/5분봉 초기 화면을 채울 때 사용한다.
+ */
+export async function fetchRecentKlines(symbol = "btcusdt", interval = "1m", limit = 120) {
+  if (typeof fetch === "undefined") {
+    throw new Error("Fetch API is not available in this environment.");
+  }
+
+  const url = new URL("/fapi/v1/klines", REST_BASE_URL);
   url.searchParams.set("symbol", symbol.toUpperCase());
-  url.searchParams.set("startTime", String(now - BACKFILL_WINDOW_MS));
-  url.searchParams.set("endTime", String(now));
-  url.searchParams.set("limit", "1000");
+  url.searchParams.set("interval", interval);
+  url.searchParams.set("limit", String(limit));
 
   const response = await fetch(url);
 
   if (!response.ok) {
-    throw new Error(`Failed to fetch aggTrades: ${response.status}`);
+    throw new Error(`Failed to fetch klines: ${response.status}`);
   }
 
-  const trades = await response.json();
-  return Array.isArray(trades) ? trades : [];
+  const klines = await response.json();
+  return Array.isArray(klines) ? klines : [];
 }
 
 /**
@@ -197,6 +253,84 @@ export function connectBinanceFeed({
   return () => {
     closedByUser = true;
     clearTimers();
+    socket?.close();
+  };
+}
+
+/**
+ * Binance 공식 kline WebSocket feed를 연결한다.
+ *
+ * 차트 전용 feed이며, 가격/체결 feed와 분리해서 사용한다.
+ */
+export function connectBinanceKlineFeed({
+  symbol = "btcusdt",
+  interval = "1m",
+  onEvent,
+  onStatusChange,
+}) {
+  if (typeof WebSocket === "undefined") {
+    onStatusChange?.("unavailable");
+    return () => {};
+  }
+
+  let socket = null;
+  let reconnectTimer = null;
+  let closedByUser = false;
+
+  const clearReconnect = () => {
+    if (reconnectTimer) {
+      window.clearTimeout(reconnectTimer);
+      reconnectTimer = null;
+    }
+  };
+
+  const scheduleReconnect = () => {
+    if (closedByUser) {
+      return;
+    }
+
+    onStatusChange?.("reconnecting");
+    reconnectTimer = window.setTimeout(() => {
+      openSocket();
+    }, RECONNECT_DELAY_MS);
+  };
+
+  function openSocket() {
+    clearReconnect();
+    onStatusChange?.("connecting");
+    socket = new WebSocket(buildKlineStreamUrl(symbol, interval));
+
+    socket.addEventListener("open", () => {
+      onStatusChange?.("connected");
+    });
+
+    socket.addEventListener("message", (event) => {
+      try {
+        const parsed = JSON.parse(event.data);
+        onStatusChange?.("live");
+
+        if (parsed?.e === "kline" && parsed?.k?.i === interval) {
+          onEvent?.(parsed);
+        }
+      } catch (error) {
+        console.error("Failed to process Binance kline payload", error);
+      }
+    });
+
+    socket.addEventListener("error", () => {
+      onStatusChange?.("error");
+    });
+
+    socket.addEventListener("close", () => {
+      scheduleReconnect();
+    });
+  }
+
+  openSocket();
+
+  return () => {
+    closedByUser = true;
+    clearReconnect();
     socket?.close();
   };
 }

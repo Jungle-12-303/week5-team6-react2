@@ -156,6 +156,29 @@ body::before {
   font-size: 13px;
 }
 
+.interval-toggle {
+  display: inline-flex;
+  gap: 8px;
+}
+
+.interval-button {
+  border: 1px solid rgba(149, 163, 194, 0.18);
+  border-radius: 999px;
+  background: rgba(11, 21, 39, 0.72);
+  color: var(--text-muted);
+  padding: 8px 12px;
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+  transition: background 0.18s ease, color 0.18s ease, border-color 0.18s ease;
+}
+
+.interval-button.active {
+  background: rgba(99, 179, 255, 0.18);
+  border-color: rgba(99, 179, 255, 0.42);
+  color: #dbeafe;
+}
+
 .price-panel {
   padding-bottom: 20px;
 }
@@ -242,6 +265,51 @@ body::before {
 
 .chart-frame {
   padding: 0 18px 18px;
+}
+
+.ma-controls {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 0 0 14px;
+  flex-wrap: wrap;
+}
+
+.ma-label {
+  color: var(--text-muted);
+  font-size: 13px;
+}
+
+.ma-input {
+  width: 88px;
+  padding: 8px 10px;
+  border: 1px solid rgba(149, 163, 194, 0.18);
+  border-radius: 12px;
+  background: rgba(11, 21, 39, 0.72);
+  color: var(--text);
+  font: inherit;
+}
+
+.ma-apply-button {
+  border: 1px solid rgba(149, 163, 194, 0.18);
+  border-radius: 12px;
+  background: rgba(11, 21, 39, 0.72);
+  color: var(--text-muted);
+  padding: 8px 12px;
+  font: inherit;
+  cursor: pointer;
+  transition: background 0.18s ease, color 0.18s ease, border-color 0.18s ease;
+}
+
+.ma-apply-button.active {
+  background: rgba(167, 139, 250, 0.16);
+  border-color: rgba(167, 139, 250, 0.42);
+  color: #e9ddff;
+}
+
+.ma-status {
+  color: var(--text-muted);
+  font-size: 12px;
 }
 
 .chart-loading {

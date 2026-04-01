@@ -3,19 +3,28 @@ import {
   advanceMarketState,
   applyLivePriceUpdate,
   applyLiveTradeUpdate,
+  applyLiveKlineUpdate,
   buildChartMeta,
+  buildChartStateFromKlines,
   buildMarketStateFromAggTrades,
+  createInitialChartState,
   createInitialMarketState,
   formatAmount,
   formatAxisTick,
   formatClock,
   formatCompactNumber,
   formatPrice,
+  getChartIntervalLabel,
   formatSignedPercent,
   formatSignedPrice,
   setMarketConnection,
 } from "./market-data.js";
-import { connectBinanceFeed, fetchRecentAggTrades } from "./binance-feed.js";
+import {
+  connectBinanceFeed,
+  connectBinanceKlineFeed,
+  fetchRecentAggTrades,
+  fetchRecentKlines,
+} from "./binance-feed.js";
 
 /**
  * Header는 페이지 최상단 소개 영역을 렌더링한다.
@@ -110,8 +119,18 @@ function PricePanel({ market }) {
  * - 실제 데이터 가공은 market-data.js에서 끝난 상태다.
  * - 이 컴포넌트는 "좌표를 해석해서 SVG 요소를 만든다"는 역할만 한다.
  */
-function ChartPanel({ market, chartMeta }) {
-  const isLoading = market.isHydrating && market.candles.length === 0;
+function ChartPanel({
+  chartState,
+  selectedInterval,
+  onSelectInterval,
+  movingAverageInput,
+  appliedMovingAveragePeriod,
+  onMovingAverageInputChange,
+  onApplyMovingAverage,
+  chartMeta,
+}) {
+  const isLoading = chartState.isLoading && chartState.candles.length === 0;
+  const isValidMovingAverageInput = /^\d+$/.test(movingAverageInput) && Number(movingAverageInput) >= 5 && Number(movingAverageInput) <= 20;
 
   return h(
     "section",
@@ -119,21 +138,74 @@ function ChartPanel({ market, chartMeta }) {
     h(
       "div",
       { className: "panel-header" },
-      h("div", null, h("h2", { className: "panel-title" }, "Realtime 1s Candle Chart")),
+      h("div", null, h("h2", { className: "panel-title" }, `BTCUSDT ${getChartIntervalLabel(selectedInterval)} Chart`)),
+      h(
+        "div",
+        { className: "interval-toggle" },
+        ["1s", "1m", "5m"].map((interval) =>
+          h(
+            "button",
+            {
+              key: interval,
+              type: "button",
+              className: `interval-button ${selectedInterval === interval ? "active" : ""}`,
+              onClick: () => onSelectInterval(interval),
+            },
+            getChartIntervalLabel(interval),
+          ),
+        ),
+      ),
     ),
     h(
       "div",
       { className: "chart-frame" },
+      h(
+        "div",
+        { className: "ma-controls" },
+        h("label", { className: "ma-label", for: `ma-input-${selectedInterval}` }, `${getChartIntervalLabel(selectedInterval)} MA`),
+        h("input", {
+          id: `ma-input-${selectedInterval}`,
+          className: "ma-input",
+          type: "number",
+          min: "5",
+          max: "20",
+          step: "1",
+          value: movingAverageInput,
+          placeholder: "5-20",
+          onInput: (event) => onMovingAverageInputChange(event.target.value),
+        }),
+        h(
+          "button",
+          {
+            type: "button",
+            className: `ma-apply-button ${isValidMovingAverageInput ? "active" : ""}`,
+            onClick: () => onApplyMovingAverage(),
+            disabled: !isValidMovingAverageInput,
+          },
+          "Apply",
+        ),
+        h("span", { className: "ma-status" }, appliedMovingAveragePeriod ? `Active MA(${appliedMovingAveragePeriod})` : "No MA"),
+      ),
       isLoading
         ? h(
             "div",
             { className: "chart-loading" },
             h("div", { className: "chart-loading-title" }, "Loading chart"),
-            h("div", { className: "chart-loading-copy" }, "이전 거래 데이터를 받아와 실시간 차트를 초기화하는 중입니다."),
+            h("div", { className: "chart-loading-copy" }, selectedInterval === "1s" ? "1초 차트 데이터를 준비하는 중입니다." : `${getChartIntervalLabel(selectedInterval)} Binance kline 데이터를 불러오는 중입니다.`),
           )
         : h(
             "svg",
             { className: "chart-canvas", viewBox: "0 0 640 320", preserveAspectRatio: "none" },
+            chartMeta.movingAverage.length
+              ? h("polyline", {
+                  points: chartMeta.movingAverage.map((point) => `${point.x},${point.y}`).join(" "),
+                  fill: "none",
+                  stroke: "rgba(167, 139, 250, 0.95)",
+                  strokeWidth: "1.8",
+                  strokeLinecap: "round",
+                  strokeLinejoin: "round",
+                })
+              : null,
             h("line", {
               x1: String(chartMeta.plotWidth),
               x2: String(chartMeta.plotWidth),
@@ -268,6 +340,18 @@ export function App() {
   // 실행 순서 2:
   // 앱이 처음 시작할 때 루트 market state를 만든다.
   const [market, setMarket] = useState(() => createInitialMarketState());
+  const [selectedInterval, setSelectedInterval] = useState("1s");
+  const [chartState, setChartState] = useState(() => createInitialChartState());
+  const [movingAverageInputs, setMovingAverageInputs] = useState(() => ({
+    "1s": "",
+    "1m": "",
+    "5m": "",
+  }));
+  const [appliedMovingAveragePeriods, setAppliedMovingAveragePeriods] = useState(() => ({
+    "1s": null,
+    "1m": null,
+    "5m": null,
+  }));
 
   // 실행 순서 5:
   // 최초 렌더 후 Binance WebSocket 연결 또는 mock fallback 타이머를 설정한다.
@@ -430,9 +514,142 @@ export function App() {
     };
   }, []);
 
+  // 실행 순서 5-b:
+  // 차트 interval이 바뀔 때마다 공식 Binance kline REST + WebSocket으로 차트 feed를 다시 연결한다.
+  useEffect(() => {
+    if (selectedInterval === "1s") {
+      setChartState((previousState) => ({
+        ...previousState,
+        interval: "1s",
+        candles: market.candles,
+        connectionStatus: market.connectionStatus,
+        connectionLabel: market.connectionLabel,
+        isLoading: market.isHydrating && market.candles.length === 0,
+      }));
+
+      return () => {};
+    }
+
+    let disposed = false;
+    let disconnectKline = () => {};
+    let isHydrated = false;
+    let bufferedKlines = [];
+
+    setChartState((previousState) => ({
+      ...previousState,
+      interval: selectedInterval,
+      candles: [],
+      connectionStatus: "connecting",
+      connectionLabel: `Loading Binance ${getChartIntervalLabel(selectedInterval)} kline data`,
+      isLoading: true,
+    }));
+
+    const openKlineFeed = () => {
+      disconnectKline = connectBinanceKlineFeed({
+        symbol: "btcusdt",
+        interval: selectedInterval,
+        onStatusChange: (status) => {
+          const labels = {
+            connected: `Binance ${getChartIntervalLabel(selectedInterval)} kline connected`,
+            connecting: `Connecting Binance ${getChartIntervalLabel(selectedInterval)} kline`,
+            live: `Binance ${getChartIntervalLabel(selectedInterval)} kline live`,
+            reconnecting: `Reconnecting Binance ${getChartIntervalLabel(selectedInterval)} kline`,
+            error: `Binance ${getChartIntervalLabel(selectedInterval)} kline error`,
+          };
+
+          setChartState((previousState) => ({
+            ...previousState,
+            interval: selectedInterval,
+            connectionStatus: status,
+            connectionLabel: labels[status] || previousState.connectionLabel,
+          }));
+        },
+        onEvent: (payload) => {
+          if (!isHydrated) {
+            bufferedKlines.push(payload);
+            return;
+          }
+
+          setChartState((previousState) => applyLiveKlineUpdate(previousState, payload, selectedInterval));
+        },
+      });
+    };
+
+    const bootstrapKlines = async () => {
+      openKlineFeed();
+
+      try {
+        const klines = await fetchRecentKlines("btcusdt", selectedInterval, 120);
+
+        if (disposed) {
+          return;
+        }
+
+        setChartState((previousState) => {
+          let nextState = buildChartStateFromKlines(previousState, klines, selectedInterval);
+
+          bufferedKlines.forEach((payload) => {
+            nextState = applyLiveKlineUpdate(nextState, payload, selectedInterval);
+          });
+
+          return nextState;
+        });
+      } catch (error) {
+        console.error("Failed to fetch recent Binance klines", error);
+
+        if (!disposed && bufferedKlines.length > 0) {
+          setChartState((previousState) => {
+            let nextState = {
+              ...previousState,
+              interval: selectedInterval,
+              candles: [],
+              connectionStatus: "live",
+              connectionLabel: `Binance ${getChartIntervalLabel(selectedInterval)} kline live`,
+              isLoading: false,
+            };
+
+            bufferedKlines.forEach((payload) => {
+              nextState = applyLiveKlineUpdate(nextState, payload, selectedInterval);
+            });
+
+            return nextState;
+          });
+        }
+      }
+
+      bufferedKlines = [];
+      isHydrated = true;
+    };
+
+    bootstrapKlines();
+
+    return () => {
+      disposed = true;
+      disconnectKline();
+    };
+  }, [selectedInterval]);
+
   // 실행 순서 3:
   // market.candles가 바뀔 때만 차트 좌표를 다시 계산한다.
-  const chartMeta = useMemo(() => buildChartMeta(market.candles, 640, 320), [market.candles]);
+  const chartMeta = useMemo(
+    () => buildChartMeta(chartState.candles, 640, 320, appliedMovingAveragePeriods[selectedInterval]),
+    [chartState.candles, appliedMovingAveragePeriods, selectedInterval],
+  );
+
+  useEffect(() => {
+    if (selectedInterval !== "1s") {
+      return;
+    }
+
+    setChartState((previousState) => ({
+      ...previousState,
+      interval: "1s",
+      candles: market.candles,
+      connectionStatus: market.connectionStatus,
+      connectionLabel: market.connectionLabel,
+      isLoading: market.isHydrating && market.candles.length === 0,
+    }));
+  }, [selectedInterval, market.candles, market.connectionStatus, market.connectionLabel, market.isHydrating]);
 
   // 실행 순서 4:
   // 최신 state를 바탕으로 루트 VNode 트리를 만든다.
@@ -447,7 +664,31 @@ export function App() {
         "div",
         { className: "stack" },
         h(PricePanel, { market }),
-        h(ChartPanel, { market, chartMeta }),
+        h(ChartPanel, {
+          chartState,
+          selectedInterval,
+          onSelectInterval: setSelectedInterval,
+          movingAverageInput: movingAverageInputs[selectedInterval],
+          appliedMovingAveragePeriod: appliedMovingAveragePeriods[selectedInterval],
+          onMovingAverageInputChange: (value) =>
+            setMovingAverageInputs((previousState) => ({
+              ...previousState,
+              [selectedInterval]: value,
+            })),
+          onApplyMovingAverage: () => {
+            const parsed = Number(movingAverageInputs[selectedInterval]);
+
+            if (!Number.isInteger(parsed) || parsed < 5 || parsed > 20) {
+              return;
+            }
+
+            setAppliedMovingAveragePeriods((previousState) => ({
+              ...previousState,
+              [selectedInterval]: parsed,
+            }));
+          },
+          chartMeta,
+        }),
       ),
       h(
         "div",
